@@ -1,0 +1,35 @@
+# New Channels — Lessons (pipeline-wide corrections)
+
+Format: [date] | what happened | rule to prevent repeating it
+
+---
+
+## VoxCPM2 local TTS — install & runtime findings (2026-07-02)
+
+**[2026-07-02] | `voxcpm-ane` pip package does not exist | Do not run `pip install voxcpm-ane` — Section 13.2 of the v2.5 Master Build doc is wrong.**
+There is no separate Apple Neural Engine backend package. Only `pip3.11 install voxcpm --break-system-packages` is real. Hardware acceleration, if any, comes through torch's MPS (Metal) backend, not a dedicated ANE package.
+
+**[2026-07-02] | `python3.11 -m voxcpm.test --mode design ...` does not exist | Ignore the doc's test command — the `voxcpm.test` module is fictional.**
+Real API: `from voxcpm import VoxCPM; m = VoxCPM.from_pretrained(hf_model_id="openbmb/VoxCPM2", device=..., load_denoiser=bool); audio = m.generate(text=...)` returns a numpy float array. Write to WAV via soundfile at 16000 Hz, mono.
+
+**[2026-07-02] | First model load stalled at 509M on unauthenticated HF downloads | Always set `HF_HUB_ENABLE_HF_TRANSFER=1` and install `hf_transfer` before loading VoxCPM2.**
+Without it, downloads stall (rate-limited, single-stream) — a foreground run got SIGTERM at 10 min stuck at 509M, twice. With `pip3.11 install hf_transfer --break-system-packages` + `HF_HUB_ENABLE_HF_TRANSFER=1`, the full weight set pulled in well under a minute. Model is now cached at `~/.cache/huggingface/hub/models--openbmb--VoxCPM2`; denoiser (zipenhancer) at `~/.cache/modelscope/iic/speech_zipenhancer_ans_multiloss_16k_base`. Re-runs should use `local_files_only=True` to skip the network entirely.
+
+**[2026-07-02] | Smoke test PASSED but ran on CPU, not MPS — silent fallback | The doc's "runs on Apple Neural Engine, separate chip" premise does NOT hold as-is. Narration currently runs on CPU and competes with Susan et al.**
+Confirmed working: valid 10.08s mono 16kHz WAV generated from text. But `from_pretrained(device="mps")` threw and fell back to CPU. On CPU, generation was ~65s for ~10s of audio (~6.5x realtime) plus a very long one-time load. Implication for the pipeline: keep the model resident/warm so the load cost is paid once per run, not per video; and treat narration as CPU-bound resource contention until MPS is proven. MPS root-cause diagnostic result: RESOLVED, see next entry.
+
+**[2026-07-02] | MPS silent fallback root cause is OUT OF MEMORY, not incompatibility. This Mac Mini has 8 GB RAM. VoxCPM2 will NEVER run on MPS here. Use device="cpu", full stop.**
+Diagnostic captured the real swallowed exception (not "MPS threw"): `RuntimeError: MPS backend out of memory (MPS allocated: 9.05 GB, max allowed: 9.07 GB). Tried to allocate 16.00 MB.` It fails inside `model.to("mps")` while streaming weights. Chain of cause: MPS has no bfloat16, so voxcpm force-upcasts bfloat16 to float32 (log line: `adjusted dtype bfloat16 -> float32 for device mps`), which roughly doubles the weight footprint to ~9 GB. The box only has 8 GB unified RAM total, so the float32 model cannot fit under the MPS high-watermark cap. Verified: MPS itself IS reachable (raw matmul works, model reaches `Running on device: mps`), so the problem is capacity, not a broken backend or broken download. The `enable_denoiser` variable is settled: on and off both failed at the identical ~9.05 GB point, so the denoiser is NOT the blocker and toggling it buys nothing. Do NOT try `PYTORCH_MPS_HIGH_WATERMARK_RATIO=0.0` on this machine, removing the cap just invites swap thrash / system failure on the box that runs Susan. CPU is the correct and only path: it can use virtual memory and can keep the model in bfloat16 (lower footprint). Bible Channel migration and any future VoxCPM2 session: hardcode `device="cpu"`, keep the model resident/warm (load cost is paid once, ~2-3 min; generation is ~6.5x realtime), do not re-litigate MPS.
+
+**[2026-07-03] | CPU narrator built and proven end to end. Real timings for pipeline budgeting: load ~121s (once, kept warm), generation ~7-8x realtime warmed (~14x on the first cold scene).**
+`agents/flyt-narrator.py` reads a flyt-script-generator manifest, renders one 16 kHz mono WAV per scene into `ChannelX/tmp/<slug>/scene_NN.wav`, and writes a sidecar `ChannelX/manifests/<slug>.narration.json` mapping each track to its scene timing. Verified: valid pcm_s16le 16kHz mono, non-silent (rms ~0.1). Device is hardcoded cpu, load_denoiser=False, local_files_only=True. Model runs in bfloat16 on CPU (the footprint MPS could not hold). Audio-level check (rms floor) with retry-once-then-alert is built in per Section 03 step 6. Load-once is essential: on a 2-scene clip the model load is roughly half the wall time.
+
+**[2026-07-03] | VoxCPM2 "Voice Design mode" (text-description-only voice) DOES NOT EXIST in this build, same fiction as the doc's `voxcpm.test` command. Do not build against a `--description`/`--mode design` voice param.**
+Real `generate()` params (introspected from the installed package): `text, prompt_wav_path, prompt_text, reference_wav_path, cfg_value, inference_timesteps, min_len, max_len, normalize, denoise, retry_badcase, ...`. Voice is either the default voice (no reference) or reference-cloned via `prompt_wav_path` + `prompt_text`. The narrator uses the default voice for now; reference cloning stays a later refinement once a channel voice is sourced and stored under `~/OpenClaw/NewChannels/[Channel]/` (never point at BibleChannel/Characters, it is empty).
+
+**[2026-07-03] | Narration length does NOT match scene window automatically. A ~13-word line rendered ~10.5s. Assembly must reconcile audio duration vs. scene target duration.**
+The narrator records both `audio_duration_seconds` and `target_duration_seconds` per track in the sidecar so the assembly stage can detect over/underruns. Scene durations from the qwen stage need to be narration-length-aware, or assembly needs to time-stretch stills to the audio, not the other way around. This is an assembly-session concern, flagged here so it is not missed.
+
+**[2026-07-02] | Chatterbox removed portfolio-wide, replaced by VoxCPM2 | `chatterbox-tts` uninstalled globally. Susan/James/board-agent only referenced it via CPU-monitor/keyword strings (safe). BibleChannel `tts-chatterbox.py` + `voice-agent.js` primary path now broken (falls back to Google TTS) — needs its own migration session to VoxCPM2.**
+
+---
