@@ -1,9 +1,23 @@
-# New Channels — Master Build Document v2.5
+# New Channels — Master Build Document v2.6
 **Fast-Revenue YouTube Automation Pipeline**
 Michael Bryant II (Banc) — July 2026
 **Priority: This launches before RHI, Bible Channel, or any other Banc project. No dependencies on other builds.**
 
 ---
+
+## CHANGELOG: v2.5 → v2.6
+
+Source: Fable doc audit (2026-07-03), verified against the live build (installed voxcpm 2.0.3, on-disk folder layout, live `tracking.db`).
+
+| Section | Change |
+|---|---|
+| 02 — Production Stack (Remotion) | **Load-bearing fix.** Remotion asset guidance was backwards. Replaced "pass absolute local file paths via `--props`/inputProps, not `staticFile()`" with the correct pattern: copy or symlink downloaded assets into the Remotion project's `public/` dir and reference via `staticFile()` (or serve over local HTTP). See remotion.dev/docs/assets. |
+| 09 — Assembly Layer | Noted that HyperFrames (HTML/CSS + headless Chrome, local CLI render) sidesteps the Remotion `public/`/`staticFile()` asset-path constraint entirely, a point in its favor for the Session 3 evaluation. |
+| 00b / 143 — File Tree | `flyt-validate.js` corrected to `validate.py` (Python), matching what is actually built. |
+| 13.5 — SQLite Init | Added the `qa_flags` table to the init script and its verify output, so the script produces all 7 tables that Section 00c and the live DB already have. |
+| 03c / 492 | "5-phase pipeline" corrected to the 10-step pipeline that Section 03 actually defines. |
+| 13.4 | Marked as intentionally removed so 13.5/13.6/13.7 references stay stable. |
+| 13.2 — VoxCPM2 | Fictional `python3.11 -m voxcpm.test --mode design` replaced with the real invocation `voxcpm design --text ... --control ...` (verified against installed voxcpm 2.0.3, which ships a real `design` subcommand). Corrected the test output path from the nonexistent root `tmp/` to per-channel `ChannelA/tmp/`, matching the on-disk layout. |
 
 ## CHANGELOG: v2.4 → v2.5
 
@@ -141,7 +155,7 @@ Every session from Session 0 onward assumes this structure exists. It does not e
     flyt-orchestrator.js         ← Session 4 — shared across both channels, takes --channel flag
     flyt-script-generator.js     ← Session 1 — shared across both channels, takes --channel flag
     flyt-api-wrapper.js          ← Session 2 — shared, Gemini + BytePlus + VoxCPM2 calls
-    flyt-validate.js             ← Session 2 — shared, ffprobe/frame/audio checks
+    validate.py                  ← Session 2 — shared (Python), ffprobe/frame/audio checks + retry-once-then-alert
     flyt-watchdog.js             ← post-Session 5 — shared, monitors both channels
     flyt-outlier-scanner.js      ← Session 6+ — shared, writes to both channels' bank rows
   logs/
@@ -412,7 +426,7 @@ This deliberately does NOT use Higgsfield credits (shared with 2nd Exodus/Kadenc
 | Stills | **Nano Banana 2 Lite** (Gemini API, `gemini-3.1-flash-lite-image`) | ~$0.034/image Standard, ~$0.017/image Batch. No usable free tier for API/automated calls — AI Studio's "free" quotas are browser-UI only, not scriptable. |
 | Hero shots (1–2 per video) | **Seedance 2.0 via BytePlus/ModelArk API** | 2M free tokens on signup, then ~$0.022–0.05/sec pay-per-second. Do NOT use Dreamina — no API, visible + invisible watermark on all output regardless of plan. |
 | Voice | **VoxCPM2 (Apache-2.0) via VoxCPMANE — local, Apple Neural Engine** | $0, no GPU rental needed. Runs on the Mac Mini's Neural Engine, a separate chip from what other agents compete over. See Section 13 for install. |
-| Assembly | Remotion + **HyperFrames (via Open Design)** | Self-hosted, $0. **Critical: pass absolute local file paths via `--props`/inputProps, not `staticFile()`** — downloaded assets live outside the Remotion project directory. HyperFrames evaluated in Session 3 — see Section 09. |
+| Assembly | Remotion + **HyperFrames (via Open Design)** | Self-hosted, $0. **Correct Remotion asset pattern: copy or symlink each downloaded asset into the Remotion project's `public/` dir and reference it with `staticFile('name.ext')`** (or serve the assets over a local HTTP URL). Remotion resolves media relative to `public/`; passing raw absolute filesystem paths through `--props`/inputProps does not work because the bundler/renderer cannot read files outside the project. See remotion.dev/docs/assets. HyperFrames evaluated in Session 3, see Section 09. |
 | Outlier research | VidIQ (free tier) + TubeGen (optional) | See Section 05 |
 
 **Estimated cost per video:** $0.30–$0.80 all-in (stills + 1–2 hero clips). Narration is now $0 (local TTS).
@@ -489,7 +503,7 @@ Standard practice for all pipeline code (script generator, API wrappers, orchest
 
 All 6 `flyt-` agents are shared across Channel A and Channel B — not duplicated per channel. This is confirmed, not assumed.
 
-**Why this works:** both channels run the identical 5-phase pipeline described in Section 03 — script generation, QA pass, generation requests, validation, assembly, approval, distribution. The only things that differ between channels are data, not logic:
+**Why this works:** both channels run the identical 10-step pipeline described in Section 03 (script/scene-JSON generation, QA pass, generation requests, async polling, download, validation, assembly, approval gate, metadata/distribution, cleanup). The only things that differ between channels are data, not logic:
 
 - Entity/situation bank content (Section 01) — filtered by `channel` column in `entity_situation_bank`
 - Visual style (Section 08's STYLE_GUIDE.md, one per channel)
@@ -633,6 +647,7 @@ Open Design (`nexu-io/open-design`) is already being installed for other Banc bu
 - Free, no per-render fees, deterministic rendering (same input → same output, useful for CI/regression-style testing of the pipeline)
 - Ships built-in skills relevant to this exact use case: beat planning, caption authoring, TTS voiceover integration, motion graphics, slideshow composition — several of these may cover work you'd otherwise hand-build in Remotion
 - Non-interactive CLI, built for scripted/agentic workflows specifically — matches the "minimal human interaction" goal better than a manually-driven Remotion setup
+- Sidesteps Remotion's asset-path constraint. Because HyperFrames renders HTML/CSS through headless Chrome from a local CLI, a downloaded still or hero clip can be referenced by its normal local path or a `file://`/local-HTTP URL, with no requirement to copy assets into a `public/` dir and address them via `staticFile()` (see Section 02). For a pipeline that generates and downloads fresh assets per video, one less asset-plumbing step is a real point in HyperFrames' favor for this evaluation.
 
 **Recommendation:** trial HyperFrames via Open Design during Session 3 (assembly template build) alongside/instead of Remotion. If its beat/caption/TTS skills reduce custom code needed for the scene-JSON → final-render step, it may be the better default for these two channels specifically, while Remotion stays the right choice for anything already built around it (e.g. Bible Channel's Ken Burns/parallax pipeline, which stays as-is).
 
@@ -731,24 +746,22 @@ pip3.11 install voxcpm --break-system-packages
 pip3.11 install voxcpm-ane --break-system-packages
 ```
 
-**Test using Voice Design mode — no reference audio file required.** VoxCPM2 can synthesize a new voice from a natural-language description alone, which is the right starting point for New Channels since no channel voice has been sourced or locked yet:
+**Test using Voice Design mode — no reference audio file required.** VoxCPM2 can synthesize a new voice from a natural-language description alone, which is the right starting point for New Channels since no channel voice has been sourced or locked yet. The installed `voxcpm` (2.0.3) ships a real `design` subcommand; the voice description goes in `--control`:
 
 ```bash
-python3.11 -m voxcpm.test \
-  --mode design \
-  --description "a calm, authoritative male narrator, slight gravitas, measured pace" \
+voxcpm design \
+  --control "a calm, authoritative male narrator, slight gravitas, measured pace" \
   --text "Testing narration output for the Before Now channel." \
-  --output ~/OpenClaw/NewChannels/tmp/voxcpm-test.wav
+  --output ~/OpenClaw/NewChannels/ChannelA/tmp/voxcpm-test.wav
 ```
 
-If VoxCPMANE proves unreliable on the Neural Engine, fall back to CPU mode:
+On this 8 GB Mac Mini, run on CPU (MPS cannot hold the float32 model — see `tasks/lessons.md`):
 ```bash
-python3.11 -m voxcpm.test \
-  --mode design \
-  --description "a calm, authoritative male narrator, slight gravitas, measured pace" \
+voxcpm design \
+  --control "a calm, authoritative male narrator, slight gravitas, measured pace" \
   --text "Testing narration output for the Before Now channel." \
-  --device cpu \
-  --output ~/OpenClaw/NewChannels/tmp/voxcpm-test-cpu.wav
+  --device cpu --local-files-only --no-denoiser \
+  --output ~/OpenClaw/NewChannels/ChannelA/tmp/voxcpm-test-cpu.wav
 ```
 
 Listen to both outputs (AirDrop to MacBook if needed) before locking in a device mode for the pipeline.
@@ -777,6 +790,12 @@ pnpm tools-dev run web
 ```
 
 Verify HyperFrames is available inside the app before starting Session 3's assembly template work — check the skills/tools panel for HyperFrames-related composition options.
+
+---
+
+### 13.4 — (intentionally removed)
+
+Section 13.4 was removed in an earlier revision. The number is left vacant on purpose so existing references to 13.5, 13.6, and 13.7 elsewhere in this doc stay valid without renumbering.
 
 ---
 
@@ -864,6 +883,16 @@ CREATE TABLE IF NOT EXISTS watchdog_log (
   severity TEXT DEFAULT 'info',
   logged_at TEXT DEFAULT (datetime('now'))
 );
+
+CREATE TABLE IF NOT EXISTS qa_flags (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  video_id INTEGER REFERENCES videos(id),
+  channel TEXT NOT NULL,
+  flagged_claim TEXT NOT NULL,         -- the specific unsupported/invented claim caught
+  scene_reference TEXT,                -- which scene/timestamp in the script
+  resolution TEXT DEFAULT 'pending',   -- 'pending' | 'rewritten' | 'confirmed_accurate' | 'video_rejected'
+  flagged_at TEXT DEFAULT (datetime('now'))
+);
 """)
 
 conn.commit()
@@ -877,7 +906,7 @@ Verify:
 sqlite3 ~/OpenClaw/NewChannels/db/tracking.db ".tables"
 ```
 
-Should output: `entity_situation_bank  new_format_flags  outlier_candidates  performance  videos  watchdog_log`
+Should output all 7 tables: `entity_situation_bank  new_format_flags  outlier_candidates  performance  qa_flags  videos  watchdog_log`
 
 ---
 
@@ -922,5 +951,5 @@ The following were evaluated for this specific pipeline and are **not** part of 
 
 ---
 
-*New Channels Master Build v2.5 — Michael Bryant II — July 2026*
+*New Channels Master Build v2.6 — Michael Bryant II — July 2026*
 *This is the current top priority. RHI Agent 4 rewrite, Walking in the Way visual-agent.js fix, and KeyLux remain active but secondary until these two channels are producing revenue.*
