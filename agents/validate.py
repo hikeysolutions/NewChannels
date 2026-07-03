@@ -45,6 +45,7 @@ T = TypeVar("T")
 # Chosen defaults (see module docstring). Not doc values.
 DEFAULT_POSITIONS: Tuple[float, ...] = (0.15, 0.38, 0.62, 0.85)
 DEFAULT_DURATION_TOL = 0.75
+DEFAULT_ASPECT_TOL = 0.03  # relative tolerance on width/height ratio
 DEFAULT_BLACK_LUMA_FLOOR = 20.0  # YAVG on 0-255; below this reads as black. Note: limited-range
 # ("TV range") video encodes black as luma 16, not 0, so the floor must sit above 16 to catch it.
 # Real content averages far higher (test footage ~124), so 20 flags black without false positives.
@@ -101,8 +102,12 @@ def _frame_luma(path: str, at_seconds: float) -> Optional[float]:
     with tempfile.NamedTemporaryFile(mode="r", suffix=".txt", delete=False) as tf:
         meta_path = tf.name
     try:
+        # -ss (input seek) only when seeking into real video. A single-image still is
+        # sampled at t=0, and the JPEG image2 demuxer returns no frame if asked to seek
+        # to 0, so omit -ss there. Video positions are always > 0, unchanged.
+        seek = ["-ss", f"{at_seconds}"] if at_seconds > 0 else []
         proc = subprocess.run(
-            ["ffmpeg", "-hide_banner", "-loglevel", "error", "-ss", f"{at_seconds}",
+            ["ffmpeg", "-hide_banner", "-loglevel", "error", *seek,
              "-i", path, "-frames:v", "1",
              "-vf", f"signalstats,metadata=print:file={meta_path}", "-f", "null", "-"],
             capture_output=True, text=True,
@@ -141,6 +146,29 @@ def _check_duration(probed: dict, expected_duration, tol) -> Optional[Check]:
                  {"duration": actual, "expected": expected_duration, "tolerance": tol})
 
 
+def _parse_aspect(spec) -> float:
+    """Accept '16:9' or a numeric ratio; return width/height as a float."""
+    if isinstance(spec, (int, float)):
+        return float(spec)
+    w, h = str(spec).split(":")
+    return float(w) / float(h)
+
+
+def _check_aspect(stream: dict, expected_aspect, tol) -> Optional[Check]:
+    """Ratio check for APIs that pick pixels from a requested aspect (e.g. NB2
+    stills return 1376x768 for a '16:9' request, not exact 1920x1080)."""
+    if expected_aspect is None:
+        return None
+    w, h = stream.get("width"), stream.get("height")
+    if not w or not h:
+        return Check("aspect", False, "width/height missing from ffprobe output", {"width": w, "height": h})
+    want = _parse_aspect(expected_aspect)
+    actual = w / h
+    ok = abs(actual - want) / want <= tol
+    return Check("aspect", ok, f"{w}x{h} ratio {actual:.4f} vs requested {expected_aspect} ({want:.4f}, +/-{tol*100:.0f}%)",
+                 {"width": w, "height": h, "ratio": actual, "expected_ratio": want})
+
+
 def _check_codec(stream: dict, expected_codec) -> Optional[Check]:
     if expected_codec is None:
         return None
@@ -169,10 +197,15 @@ def _check_black_frames(path, positions, duration, floor) -> Check:
 
 # ---- public asset checks ----
 def check_still(path: str, *, expected_width=None, expected_height=None,
+                expected_aspect=None, aspect_tol=DEFAULT_ASPECT_TOL,
                 black_luma_floor=DEFAULT_BLACK_LUMA_FLOOR) -> Report:
     probed = probe(path)
     stream = _video_stream(probed)
-    checks = [c for c in (_check_resolution(stream, expected_width, expected_height),) if c]
+    candidates = (
+        _check_resolution(stream, expected_width, expected_height),
+        _check_aspect(stream, expected_aspect, aspect_tol),
+    )
+    checks = [c for c in candidates if c]
     # A still is one frame; sample it once for black/corrupt.
     checks.append(_check_black_frames(path, (0.0,), 0.0, black_luma_floor))
     return _report(path, tuple(checks))
@@ -285,6 +318,7 @@ def main(argv) -> int:
     ps.add_argument("path")
     ps.add_argument("--width", type=int)
     ps.add_argument("--height", type=int)
+    ps.add_argument("--aspect", help="e.g. 16:9 — ratio check for aspect-controlled APIs like NB2")
 
     pv = sub.add_parser("video")
     pv.add_argument("path")
@@ -300,7 +334,8 @@ def main(argv) -> int:
 
     args = p.parse_args(argv)
     if args.cmd == "still":
-        return _emit(check_still(args.path, expected_width=args.width, expected_height=args.height))
+        return _emit(check_still(args.path, expected_width=args.width, expected_height=args.height,
+                                 expected_aspect=args.aspect))
     if args.cmd == "video":
         return _emit(check_video(args.path, expected_duration=args.duration, expected_width=args.width,
                                  expected_height=args.height, expected_codec=args.codec,

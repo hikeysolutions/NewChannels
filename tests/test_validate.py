@@ -34,6 +34,8 @@ def build_fixtures(d):
     ff("-f", "lavfi", "-i", "color=c=black:size=1920x1080:rate=30:duration=6",
        "-c:v", "libx264", "-pix_fmt", "yuv420p", f"{d}/black.mp4")
     ff("-f", "lavfi", "-i", "testsrc=size=1920x1080:duration=1", "-frames:v", "1", f"{d}/good.png")
+    # Mirrors real NB2 Lite output: 1376x768 JPEG, a ~16:9 aspect the model picks itself.
+    ff("-f", "lavfi", "-i", "testsrc=size=1376x768:duration=1", "-frames:v", "1", f"{d}/nb2.jpg")
     ff("-f", "lavfi", "-i", "sine=frequency=440:duration=3:sample_rate=16000", "-ac", "1", f"{d}/tone.wav")
     ff("-f", "lavfi", "-i", "anullsrc=r=16000:cl=mono", "-t", "3", f"{d}/silent.wav")
 
@@ -56,6 +58,13 @@ def run(d):
     expect("wrong-codec", v.check_video(f"{d}/good.mp4", expected_codec="vp9").ok, False)
     # still
     expect("still good", v.check_still(f"{d}/good.png", expected_width=1920, expected_height=1080).ok, True)
+    # aspect check: NB2's 1376x768 is ~16:9 and should pass an aspect request even though
+    # it is not exactly 1920x1080 (this is why we validate aspect, not pixels, for NB2)
+    expect("nb2 aspect 16:9 ok", v.check_still(f"{d}/nb2.jpg", expected_aspect="16:9").ok, True)
+    # a 16:9 image must fail a 9:16 (portrait) aspect request
+    expect("nb2 aspect 9:16 fails", v.check_still(f"{d}/nb2.jpg", expected_aspect="9:16").ok, False)
+    # exact-pixel check still fails when the caller wrongly demands 1920x1080 of an NB2 still
+    expect("nb2 exact-px mismatch fails", v.check_still(f"{d}/nb2.jpg", expected_width=1920, expected_height=1080).ok, False)
     # audio from disk
     expect("tone audio", v.check_audio(path=f"{d}/tone.wav").ok, True)
     expect("silent audio", v.check_audio(path=f"{d}/silent.wav").ok, False)
