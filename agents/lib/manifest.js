@@ -52,6 +52,17 @@ function validateScenes(sceneObj) {
     if (typeof scene.narration !== "string" || scene.narration.trim() === "") {
       throw new Error(`${at}: narration must be a non-empty string`);
     }
+    // visual_prompt feeds the stills/hero generators (flyt-stills.py, Seedance
+    // wrapper). qwen's JSON contract declares it, but a missing/empty value must
+    // fail here at the source, not silently break generation downstream.
+    if (typeof scene.visual_prompt !== "string" || scene.visual_prompt.trim() === "") {
+      throw new Error(`${at}: visual_prompt must be a non-empty string`);
+    }
+    // on_screen_text is the assembly-stage caption; empty string is allowed
+    // (qwen returns "" when a scene has no caption) but it must be present.
+    if (typeof scene.on_screen_text !== "string") {
+      throw new Error(`${at}: on_screen_text must be a string (empty string allowed)`);
+    }
     if (scene.asset_type === "hero") heroCount += 1;
     expectedStart = scene.end;
   });
