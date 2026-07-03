@@ -6,6 +6,22 @@
 
 const CHANNEL_DIRS = { channel_a: "ChannelA", channel_b: "ChannelB" };
 
+// v2.7 gap-chain schema (Master Build Section 00c). Each block declares a
+// gap_type from a rotating taxonomy and a gap_state describing where it sits in
+// the overlapping-gap chain. A block may open a new tension before the previous
+// block's gap has resolved.
+const GAP_TYPES = [
+  "new_fact",
+  "contradiction",
+  "escalation",
+  "reframing",
+  "hidden_implication",
+  "anomaly",
+  "causal_fragment",
+  "perspective_shift",
+];
+const GAP_STATES = ["opens", "partial_resolve", "resolves"];
+
 function channelDir(channel) {
   const dir = CHANNEL_DIRS[channel];
   if (!dir) throw new Error(`unknown channel "${channel}" (expected channel_a or channel_b)`);
@@ -63,6 +79,25 @@ function validateScenes(sceneObj) {
     if (typeof scene.on_screen_text !== "string") {
       throw new Error(`${at}: on_screen_text must be a string (empty string allowed)`);
     }
+    // v2.7 gap-chain fields (Section 00c). Every block must declare a valid
+    // gap_type and gap_state, and no two consecutive blocks may repeat the same
+    // gap_type.
+    if (!GAP_TYPES.includes(scene.gap_type)) {
+      throw new Error(
+        `${at}: gap_type must be one of ${GAP_TYPES.join(", ")} (got "${scene.gap_type}")`
+      );
+    }
+    if (!GAP_STATES.includes(scene.gap_state)) {
+      throw new Error(
+        `${at}: gap_state must be one of ${GAP_STATES.join(", ")} (got "${scene.gap_state}")`
+      );
+    }
+    if (i > 0 && scene.gap_type === scenes[i - 1].gap_type) {
+      throw new Error(
+        `${at}: gap_type "${scene.gap_type}" repeats the previous block's gap_type (no consecutive repeats)`
+      );
+    }
+
     if (scene.asset_type === "hero") heroCount += 1;
     expectedStart = scene.end;
   });

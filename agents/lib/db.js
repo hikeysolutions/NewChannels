@@ -51,16 +51,37 @@ function pickCombo(db, channel, entityOverride, situationOverride) {
 }
 
 // Insert a new videos row in the 'scripting' state and return its id.
+// v2.7 (Section 00c): supports the multi-shorts data model. `parent_video_id`
+// is NULL for a long-form video and points at the parent row for a short cut
+// from it; `video_type` is 'long_form' | 'short', defaulting to 'long_form'.
 function insertVideo(db, video) {
+  const video_type = video.video_type ?? "long_form";
+  if (video_type !== "long_form" && video_type !== "short") {
+    throw new Error(
+      `invalid video_type "${video_type}" - must be 'long_form' or 'short'`
+    );
+  }
+
+  // New object, never mutate the caller's input.
+  const row = {
+    ...video,
+    parent_video_id: video.parent_video_id ?? null,
+    video_type,
+  };
+
   const stmt = db.prepare(
-    `INSERT INTO videos (channel, entity, situation, title, status, script_path, manifest_path)
-     VALUES (@channel, @entity, @situation, @title, 'scripting', @script_path, @manifest_path)`
+    `INSERT INTO videos (channel, entity, situation, title, status, script_path, manifest_path, parent_video_id, video_type)
+     VALUES (@channel, @entity, @situation, @title, 'scripting', @script_path, @manifest_path, @parent_video_id, @video_type)`
   );
-  const info = stmt.run(video);
+  const info = stmt.run(row);
   return info.lastInsertRowid;
 }
 
 // Mark a combo as used once a script has been generated for it.
+// v2.7: entity_situation_bank has no new columns. Combos are consumed at the
+// long-form level only — a short cut from a long-form (video_type = 'short')
+// reuses the parent's combo, so this must NOT be called again for the short,
+// or used_count would double-count a single piece of source content.
 function markComboUsed(db, channel, entity, situation) {
   db.prepare(
     `UPDATE entity_situation_bank
