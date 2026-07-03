@@ -97,6 +97,50 @@ def run(d):
 
     _, rep = v.run_with_retry(flaky, lambda s: v.check_audio(samples=s, sample_rate=16000), label="flaky")
     expect("retry recovers on 2nd attempt", rep.ok and calls2["n"] == 2, True)
+    # retry-once-then-alert also covers a produce() that RAISES (e.g. a failed video job):
+    # two raising attempts -> RuntimeError after exactly 2 calls
+    ecalls = {"n": 0}
+
+    def always_raises():
+        ecalls["n"] += 1
+        raise RuntimeError("simulated job failure")
+
+    try:
+        v.run_with_retry(always_raises, lambda a: a, label="raiser")
+        expect("produce-exception raises", False, True)
+    except RuntimeError:
+        expect("produce-exception raises after exactly 2 attempts", ecalls["n"], 2)
+    # produce() raises once then succeeds -> recovers
+    rcalls = {"n": 0}
+
+    def raise_then_ok():
+        rcalls["n"] += 1
+        if rcalls["n"] == 1:
+            raise RuntimeError("transient failure")
+        return (0.3 * np.sin(np.linspace(0, 600, 16000))).astype("float32")
+
+    _, rep2 = v.run_with_retry(raise_then_ok, lambda s: v.check_audio(samples=s, sample_rate=16000), label="transient")
+    expect("recovers after produce() raised once", rep2.ok and rcalls["n"] == 2, True)
+    # a validator that RAISES (a bug, not a transient failure) must propagate immediately,
+    # WITHOUT re-running produce() — this is what stops a validator bug from re-spending on paid APIs
+    vcalls = {"n": 0}
+
+    def counting_produce():
+        vcalls["n"] += 1
+        return np.zeros(10, dtype="float32")
+
+    def buggy_validate(_):
+        raise TypeError("validator bug")
+
+    try:
+        v.run_with_retry(counting_produce, buggy_validate, label="valbug")
+        expect("validator exception propagates", False, True)
+    except TypeError:
+        expect("validator exception does NOT re-run produce", vcalls["n"], 1)
+
+    # check_video accepts expected_aspect (good.mp4 is 1920x1080 = exactly 16:9)
+    expect("check_video aspect 16:9 ok", v.check_video(f"{d}/good.mp4", expected_aspect="16:9").ok, True)
+    expect("check_video aspect 9:16 fails", v.check_video(f"{d}/good.mp4", expected_aspect="9:16").ok, False)
 
 
 def main():

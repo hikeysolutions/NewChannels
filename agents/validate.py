@@ -212,6 +212,7 @@ def check_still(path: str, *, expected_width=None, expected_height=None,
 
 
 def check_video(path: str, *, expected_duration=None, expected_width=None, expected_height=None,
+                expected_aspect=None, aspect_tol=DEFAULT_ASPECT_TOL,
                 expected_codec=None, duration_tol_seconds=DEFAULT_DURATION_TOL,
                 positions=DEFAULT_POSITIONS, black_luma_floor=DEFAULT_BLACK_LUMA_FLOOR) -> Report:
     probed = probe(path)
@@ -222,6 +223,7 @@ def check_video(path: str, *, expected_duration=None, expected_width=None, expec
         duration = 0.0
     candidates = (
         _check_resolution(stream, expected_width, expected_height),
+        _check_aspect(stream, expected_aspect, aspect_tol),
         _check_duration(probed, expected_duration, duration_tol_seconds),
         _check_codec(stream, expected_codec),
     )
@@ -284,20 +286,35 @@ def check_audio(*, path: str = None, samples=None, sample_rate: int = None,
 # ---- reusable retry-once-then-alert (the pattern other Python agents call into) ----
 def run_with_retry(produce: Callable[[], T], validate: Callable[[T], Report], *,
                    label: str, alert: Callable[[Report], None] = None) -> Tuple[T, Report]:
-    """Run produce(); validate the artifact; on failure retry produce() ONCE; if it
-    still fails, call alert(report) (if given) and raise. Returns (artifact, report)."""
-    artifact = produce()
-    report = validate(artifact)
-    if report.ok:
-        return artifact, report
-    sys.stderr.write(f"[warn] {label}: validation failed ({_fail_summary(report)}); retrying once...\n")
-    artifact = produce()
-    report = validate(artifact)
-    if report.ok:
-        return artifact, report
-    if alert is not None:
-        alert(report)
-    raise RuntimeError(f"{label}: validation failed after retry ({_fail_summary(report)})")
+    """Run produce(); validate the artifact; retry the whole operation ONCE on
+    failure; if it still fails, alert (when a Report exists) and raise. Returns
+    (artifact, report). A failure is EITHER a produce() exception (e.g. a failed
+    generation job) OR a Report that is not ok, so both paths get one retry."""
+    last_report = None
+    last_exc = None
+    for attempt in (1, 2):
+        try:
+            artifact = produce()
+        except Exception as exc:  # noqa: BLE001 - a raised produce() (e.g. a failed job) is retryable
+            last_report = None
+            last_exc = exc
+            if attempt == 1:
+                sys.stderr.write(f"[warn] {label}: attempt 1 failed (produce() raised: {exc}); retrying once...\n")
+            continue
+        # validate() must RETURN a Report. If it raises, that is a bug in the validator,
+        # not a transient failure, so let it propagate rather than waste another (often
+        # paid) produce() on a pointless retry.
+        last_report = validate(artifact)
+        if last_report.ok:
+            return artifact, last_report
+        last_exc = None
+        if attempt == 1:
+            sys.stderr.write(f"[warn] {label}: attempt 1 failed ({_fail_summary(last_report)}); retrying once...\n")
+    if last_report is not None:
+        if alert is not None:
+            alert(last_report)
+        raise RuntimeError(f"{label}: validation failed after retry ({_fail_summary(last_report)})")
+    raise RuntimeError(f"{label}: failed after retry (produce() raised: {last_exc})") from last_exc
 
 
 def _fail_summary(report: Report) -> str:
@@ -325,6 +342,7 @@ def main(argv) -> int:
     pv.add_argument("--duration", type=float)
     pv.add_argument("--width", type=int)
     pv.add_argument("--height", type=int)
+    pv.add_argument("--aspect", help="e.g. 16:9 — ratio check for aspect-controlled video APIs")
     pv.add_argument("--codec")
     pv.add_argument("--duration-tol", type=float, default=DEFAULT_DURATION_TOL)
 
@@ -338,8 +356,8 @@ def main(argv) -> int:
                                  expected_aspect=args.aspect))
     if args.cmd == "video":
         return _emit(check_video(args.path, expected_duration=args.duration, expected_width=args.width,
-                                 expected_height=args.height, expected_codec=args.codec,
-                                 duration_tol_seconds=args.duration_tol))
+                                 expected_height=args.height, expected_aspect=args.aspect,
+                                 expected_codec=args.codec, duration_tol_seconds=args.duration_tol))
     if args.cmd == "audio":
         return _emit(check_audio(path=args.path, silence_rms_floor=args.silence_floor))
     return 2
