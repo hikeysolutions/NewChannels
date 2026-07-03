@@ -24,10 +24,9 @@ import os
 import sys
 import time
 
+import validate  # shared validation gate (same agents/ dir); provides check_audio + run_with_retry
+
 SAMPLE_RATE = 16000  # VoxCPM2 emits 16 kHz mono (confirmed via smoke test)
-# RMS floor for the "not silent" audio-level check (Section 03 step 6). VoxCPM2
-# output sits well above this; true silence/failed generation sits far below.
-SILENCE_RMS_FLOOR = 0.005
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CHANNEL_DIRS = {"channel_a": "ChannelA", "channel_b": "ChannelB"}
@@ -36,11 +35,6 @@ CHANNEL_DIRS = {"channel_a": "ChannelA", "channel_b": "ChannelB"}
 def info(msg):
     sys.stdout.write(f"[info] {msg}\n")
     sys.stdout.flush()
-
-
-def warn(msg):
-    sys.stderr.write(f"[warn] {msg}\n")
-    sys.stderr.flush()
 
 
 def parse_args(argv):
@@ -95,33 +89,23 @@ def load_model():
     return model
 
 
-def rms(samples):
-    import numpy as np
-
-    arr = np.asarray(samples, dtype="float64").reshape(-1)
-    if arr.size == 0:
-        return 0.0
-    return float(np.sqrt(np.mean(arr * arr)))
-
-
 def render_scene(model, text):
-    """Generate one scene's audio as a mono float32 numpy array. Retry-once-then-
-    alert on silent/empty output (Section 03 step 6 discipline)."""
+    """Generate one scene's audio as a mono float32 numpy array. Silence/clipping
+    validation and retry-once-then-alert live in validate.py (Section 03 step 6),
+    so the discipline is shared with every other asset, not re-implemented here."""
     import numpy as np
 
-    def attempt():
+    def produce():
         audio = model.generate(text=text)
         return np.asarray(audio, dtype="float32").reshape(-1)
 
-    samples = attempt()
-    level = rms(samples)
-    if samples.size == 0 or level < SILENCE_RMS_FLOOR:
-        warn(f"audio-level check failed (rms={level:.5f}, len={samples.size}); retrying once...")
-        samples = attempt()
-        level = rms(samples)
-        if samples.size == 0 or level < SILENCE_RMS_FLOOR:
-            raise RuntimeError(f"narration silent/empty after retry (rms={level:.5f}, len={samples.size})")
-    return samples, level
+    samples, report = validate.run_with_retry(
+        produce,
+        lambda s: validate.check_audio(samples=s, sample_rate=SAMPLE_RATE),
+        label="narration",
+    )
+    rms = next(c.metrics["rms"] for c in report.checks if c.name == "silence")
+    return samples, rms
 
 
 def write_wav(path, samples):
