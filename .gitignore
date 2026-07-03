@@ -25,3 +25,7 @@ outputs/
 # Node + OS cruft
 node_modules/
 .DS_Store
+
+# Python bytecode
+__pycache__/
+*.pyc
