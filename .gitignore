@@ -1,0 +1,27 @@
+# NewChannels — standalone repo ignore rules
+# Ported from OpenClaw root .gitignore, un-scoped (NewChannels is now repo root)
+
+# Working / media directories
+tmp/
+outputs/
+
+# Media files
+*.mp4
+*.png
+*.jpg
+*.jpeg
+*.wav
+*.mp3
+
+# Database (SQLite tracking.db) + WAL sidecars
+*.db
+*.db-wal
+*.db-shm
+
+# Secrets
+.env
+.env*
+
+# Node + OS cruft
+node_modules/
+.DS_Store
