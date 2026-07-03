@@ -1,0 +1,14 @@
+{
+  "name": "newchannels-pipeline",
+  "version": "0.1.0",
+  "private": true,
+  "type": "commonjs",
+  "description": "Two-channel YouTube automation pipeline (flyt- agents)",
+  "scripts": {
+    "script:a": "node agents/flyt-script-generator.js --channel channel_a",
+    "script:b": "node agents/flyt-script-generator.js --channel channel_b"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.0.0"
+  }
+}
