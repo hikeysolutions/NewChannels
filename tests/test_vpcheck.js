@@ -107,5 +107,30 @@ const uniqueMock = async ({ index, otherPrompts }) => {
   assert.ok(r3.flagged.length > 0, "transport failure falls through to qa_flag");
   ok("regenerate transport failure -> qa_flag (graceful)");
 
+  // ---- 7. non-English (CJK) leakage detection (observed qwen2.5:7b slip) ----
+  const { findNonEnglish } = require("../agents/lib/vpcheck");
+  assert.ok(findNonEnglish("stick figures setting up 简易帐篷。"), "CJK must be detected");
+  assert.strictEqual(findNonEnglish("the night’s vast sky — a lone figure gazes up"), null,
+    "curly quotes / em dash must NOT false-positive");
+  const cjk = auditVisualPrompts([scene("a lone figure walking 简易 across the plain")]);
+  assert.ok(cjk.issues.some((i) => i.type === "non_english"), "audit flags non_english");
+  ok("non-English (CJK) leakage detected; curly quotes safe");
+
+  // ---- 8. distinctness is WINDOWED (±3): far-apart repeats are NOT flagged ----
+  const same = "wide establishing shot of a single figure crouching by a small fire tending stone tools";
+  const spread = [
+    scene(same),
+    scene("low-angle close-up of two figures climbing a rocky ridge at dusk"),
+    scene("overhead shot of a river winding through a dark forested valley"),
+    scene("side profile of a lone figure raising a torch toward the night sky"),
+    scene(same), // 4 apart from index 0 -> outside the window
+  ];
+  const spreadDup = auditVisualPrompts(spread).issues.filter((i) => i.type === "near_duplicate");
+  assert.strictEqual(spreadDup.length, 0, "identical shots 4 apart must NOT be flagged (windowed)");
+  const adjacentDup = auditVisualPrompts([scene(same), scene(same)]).issues
+    .filter((i) => i.type === "near_duplicate");
+  assert.strictEqual(adjacentDup.length, 1, "adjacent identical shots must be flagged");
+  ok("distinctness windowed to ±3 (far repeats pass, adjacent flagged)");
+
   process.stdout.write(`\n${passed} checks passed\n`);
 })().catch((e) => { console.error("TEST FAILED:", e.message); process.exit(1); });

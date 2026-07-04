@@ -161,4 +161,67 @@ async function regenerateVisualPrompt({ scene, avoid, otherPrompts = [], channel
   return parsed.visual_prompt.trim();
 }
 
-module.exports = { toSceneJson, regenerateVisualPrompt, MODEL };
+// Shot-prompt pass (stage 6). Given ONE shot window's exact aligned narration
+// text plus its immediate neighbours (for distinctness + context), write one
+// concrete stick-figure visual_prompt depicting THAT shot. Timing is already
+// fixed by shots.js; this only decides what each shot depicts. Same discipline as
+// the main pass and the repair primitive: framing + subject count + one visible
+// action + lighting, and never a sound/silence/temperature/emotion cue. Throws on
+// transport/HTTP/JSON failure so the caller can retry or fall through to a flag.
+async function generateShotPrompt({ shotText, prevText, nextText, channel, entity, situation }) {
+  const prompt = [
+    "You write ONE image-generation prompt (visual_prompt) for a single ~3-second video shot.",
+    'Output ONLY valid JSON of the exact shape: { "visual_prompt": "..." }. No prose.',
+    "",
+    "The visual_prompt is a concrete, filmable SHOT DESCRIPTION for a stick-figure image. It MUST specify:",
+    "  (a) FRAMING / ANGLE (e.g. wide establishing shot, low-angle close-up, overhead/top-down, over-the-shoulder, side profile).",
+    "  (b) SUBJECT COUNT (e.g. a single figure, two figures, a small group of five).",
+    "  (c) ONE SPECIFIC VISIBLE ACTION happening now (something you could photograph), NOT an internal state.",
+    "  (d) LIGHTING INTENT where relevant (e.g. firelight from below, pale moonlight, dawn backlight).",
+    "HARD RULE: describe ONLY what a camera can see. No sounds, no silence, no temperature, no smell, no emotion, no music/rhythm — an image cannot show those.",
+    "HARD RULE: depict THIS shot's line specifically, and make it visibly DISTINCT from the neighbouring shots below (different action, focus, and composition) — never a restatement of a neighbour.",
+    "",
+    channel ? `channel: ${channel}` : "",
+    entity ? `entity: ${entity}` : "",
+    situation ? `situation: ${situation}` : "",
+    "",
+    prevText ? `PREVIOUS shot said (do not repeat its imagery): ${prevText}` : "",
+    `THIS shot says (depict this): ${shotText}`,
+    nextText ? `NEXT shot will say (leave it for that shot, do not depict it): ${nextText}` : "",
+  ].filter((l) => l !== "").join("\n");
+
+  const body = {
+    model: MODEL,
+    prompt,
+    format: "json",
+    stream: false,
+    // A little warmth so 200 sibling shots do not collapse into a template.
+    options: { temperature: 0.5 },
+  };
+
+  let res;
+  try {
+    res = await fetch(OLLAMA_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  } catch (err) {
+    throw new Error(`Ollama request failed (is 'ollama serve' running on 11434?): ${err.message}`);
+  }
+  if (!res.ok) throw new Error(`Ollama returned HTTP ${res.status}`);
+  const payload = await res.json();
+  if (!payload.response) throw new Error("Ollama returned an empty response field");
+  let parsed;
+  try {
+    parsed = JSON.parse(payload.response);
+  } catch (err) {
+    throw new Error(`qwen did not return valid JSON: ${err.message}`);
+  }
+  if (typeof parsed.visual_prompt !== "string" || !parsed.visual_prompt.trim()) {
+    throw new Error("qwen shot-prompt did not return a non-empty visual_prompt");
+  }
+  return parsed.visual_prompt.trim();
+}
+
+module.exports = { toSceneJson, regenerateVisualPrompt, generateShotPrompt, MODEL };

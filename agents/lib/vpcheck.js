@@ -34,6 +34,16 @@ const NONVISUAL_TERMS = [
 ];
 const NONVISUAL_RE = new RegExp(`\\b(${NONVISUAL_TERMS.join("|")})\\b`, "i");
 
+// Non-English leakage: qwen2.5:7b occasionally emits CJK tokens mid-prompt (a real
+// observed slip, e.g. "...setting up 简易帐篷。"). An image prompt must be English
+// only. Match CJK ideographs + CJK/fullwidth punctuation; deliberately NOT all
+// non-ASCII, so legitimate curly quotes (’ “ ”) and dashes do not false-positive.
+const NON_ENGLISH_RE = /[　-〿㐀-䶿一-鿿＀-￯]/;
+function findNonEnglish(vp) {
+  const m = String(vp).match(NON_ENGLISH_RE);
+  return m ? m[0] : null;
+}
+
 // Shot-type / framing tokens (rule 1: consecutive scenes must not share one).
 const FRAMING_TERMS = [
   "wide establishing", "establishing", "wide shot", "wide", "extreme close",
@@ -95,6 +105,13 @@ function clauses(vp) {
 
 const JACCARD_NEAR_DUP = 0.5;
 
+// Distinctness is a LOCAL property: adjacent shots must look different, but a shot
+// at position 5 and one at position 150 need not be cross-checked. For a 150-220
+// shot script global pairwise comparison is both O(n^2) slow and the wrong
+// granularity, so clause-reuse and near-duplicate are checked only within this
+// sliding window (compare shot i against the DISTINCT_WINDOW shots before it).
+const DISTINCT_WINDOW = 3;
+
 // ---- audit -------------------------------------------------------------------
 // Returns { issues: [{ index, type, detail }] }. type is one of:
 //   "non_visual"      — an audio/sensation keyword the image model cannot render
@@ -111,6 +128,8 @@ function auditVisualPrompts(scenes) {
   vps.forEach((vp, i) => {
     const kw = findNonVisual(vp);
     if (kw) issues.push({ index: i, type: "non_visual", detail: kw });
+    const ne = findNonEnglish(vp);
+    if (ne) issues.push({ index: i, type: "non_english", detail: ne });
     if (i > 0) {
       const f = firstFraming(vp);
       const fPrev = firstFraming(vps[i - 1]);
@@ -120,21 +139,26 @@ function auditVisualPrompts(scenes) {
     }
   });
 
-  // action-clause reuse (first occurrence is the keeper; later ones flagged)
-  const clauseFirstSeen = new Map();
-  vps.forEach((vp, i) => {
-    for (const c of clauses(vp)) {
-      if (clauseFirstSeen.has(c)) {
-        issues.push({ index: i, type: "clause_reuse", detail: c });
-      } else {
-        clauseFirstSeen.set(c, i);
+  // action-clause reuse — windowed. Flag scene i if one of its >=4-word clauses
+  // also appears in any of the DISTINCT_WINDOW scenes immediately before it (the
+  // later scene is flagged; the earlier is the keeper).
+  const clauseSets = vps.map((vp) => new Set(clauses(vp)));
+  for (let i = 1; i < vps.length; i += 1) {
+    const from = Math.max(0, i - DISTINCT_WINDOW);
+    let dup = null;
+    for (const c of clauseSets[i]) {
+      for (let k = from; k < i && dup === null; k += 1) {
+        if (clauseSets[k].has(c)) dup = c;
       }
+      if (dup) break;
     }
-  });
+    if (dup) issues.push({ index: i, type: "clause_reuse", detail: dup });
+  }
 
-  // near-duplicate (Jaccard) against every earlier scene
+  // near-duplicate (Jaccard) — windowed to the DISTINCT_WINDOW earlier scenes.
   for (let i = 0; i < vps.length; i += 1) {
-    for (let k = 0; k < i; k += 1) {
+    const from = Math.max(0, i - DISTINCT_WINDOW);
+    for (let k = from; k < i; k += 1) {
       if (jaccard(vps[i], vps[k]) >= JACCARD_NEAR_DUP) {
         issues.push({ index: i, type: "near_duplicate", detail: `scene ${k}` });
         break; // one near-dup flag per scene is enough to trigger repair
@@ -172,6 +196,9 @@ function avoidInstruction(sceneIssues) {
   if (sceneIssues.some((i) => i.type === "near_duplicate")) {
     parts.push("This shot is too similar to another scene — describe a genuinely different action, focus, and composition.");
   }
+  if (sceneIssues.some((i) => i.type === "non_english")) {
+    parts.push("Write the prompt in ENGLISH ONLY — the previous version contained non-English (e.g. Chinese) characters.");
+  }
   return parts.join(" ");
 }
 
@@ -203,9 +230,16 @@ async function repairVisualPrompts(scenes, { regenerate, maxAttempts = 2 } = {})
       const sceneIssues = issuesForIndex(auditVisualPrompts(out).issues, index);
       if (sceneIssues.length === 0) break; // already clean (a prior scene's fix cleared it)
 
-      const otherPrompts = out
-        .map((s, i) => (i === index ? null : s.visual_prompt))
-        .filter((p) => typeof p === "string" && p.trim());
+      // Only the windowed neighbours matter for distinctness, so a regenerated
+      // shot is told to differ from those, not from all 200+ prompts.
+      const lo = Math.max(0, index - DISTINCT_WINDOW);
+      const hi = Math.min(out.length - 1, index + DISTINCT_WINDOW);
+      const otherPrompts = [];
+      for (let j = lo; j <= hi; j += 1) {
+        if (j !== index && typeof out[j].visual_prompt === "string" && out[j].visual_prompt.trim()) {
+          otherPrompts.push(out[j].visual_prompt);
+        }
+      }
       let newPrompt;
       try {
         newPrompt = await regenerate({
@@ -254,6 +288,7 @@ module.exports = {
   NONVISUAL_TERMS,
   NONVISUAL_RE,
   findNonVisual,
+  findNonEnglish,
   firstFraming,
   jaccard,
   clauses,
@@ -261,4 +296,5 @@ module.exports = {
   avoidInstruction,
   repairVisualPrompts,
   JACCARD_NEAR_DUP,
+  DISTINCT_WINDOW,
 };
