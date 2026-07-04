@@ -8,6 +8,8 @@
 //
 // Stage 2 (scene JSON) stays on local qwen2.5:7b - see qwen.js.
 
+const { personaFor } = require("./personas");
+
 // Recommended replacement for the deprecated llama-3.3-70b-versatile (Groq
 // decommission 2026-08-16). Matches the creative tier already in use elsewhere.
 const GROQ_MODEL = "openai/gpt-oss-120b";
@@ -52,18 +54,30 @@ async function callChat(url, apiKey, model, systemPrompt, userPrompt, maxTokens,
 }
 
 function buildSystemPrompt(channel, styleGuide) {
+  // Persona (Section 06) is the voice identity and comes first: the STYLE GUIDE
+  // governs FORMAT (beats, title formula), the persona governs VOICE. When they
+  // seem to conflict, the persona's own "prioritize retention pacing over
+  // stylistic purity" rule (in the block) resolves it.
+  const persona = personaFor(channel);
   return [
-    `You are the script writer for a YouTube automation pipeline, channel "${channel}".`,
-    "Follow the channel style guide below exactly: its format, its beat structure, and its title formula.",
+    `You are the narrator-script writer for a YouTube automation pipeline, channel "${channel}".`,
+    "You write in a specific, fixed narrator voice. That voice is defined in the NARRATOR PERSONA below and is NOT optional: it governs word choice, framing, and worldview in every line.",
+    "",
+    "=== NARRATOR PERSONA (voice identity — follow exactly, never state or explain it) ===",
+    persona,
+    "",
+    "=== HOW TO WRITE ===",
+    "Follow the channel style guide below for FORMAT: its beat structure and its title formula. Follow the persona above for VOICE.",
     "Write a single narration script a voice actor can read start to finish. No stage directions, no shot lists, no JSON.",
     "Every video must be genuinely written for its specific subject, never a find-and-replace of a template (YouTube mass-content policy).",
     "Do not invent confident-sounding but unsupported historical facts. If a specific detail is not well established, keep the claim general.",
     "Write like a human. Vary sentence length. No em dashes, no filler, no AI throat-clearing.",
+    "Do not use any of the persona's Forbidden Shortcuts anywhere, including the opening line.",
     "",
     "First line of your reply MUST be exactly: TITLE: <the video title, built from the style guide title formula>",
     "Then a blank line, then the narration script itself, organized into the style guide's beats with a short bold beat label before each beat.",
     "",
-    "=== CHANNEL STYLE GUIDE ===",
+    "=== CHANNEL STYLE GUIDE (format only) ===",
     styleGuide,
   ].join("\n");
 }
@@ -80,10 +94,12 @@ async function generateScript({ groqKey, cerebrasKey, channel, styleGuide, entit
   ].join("\n");
 
   // Groq free on_demand tier caps at 8000 TPM, counting input + reserved
-  // max_tokens together. Cap the reservation below that so a normal script
-  // request fits (input ~750 + 7000 = ~7750 < 8000). ~72s of narration is only
-  // ~1500-2000 output tokens, so this is still ample headroom.
-  const maxTokens = 7000;
+  // max_tokens together. The system prompt now carries the Section 06 persona
+  // block (~600 tokens) on top of the style guide, so input runs ~1300-1400
+  // tokens. Keep the reservation low enough that input + reservation stays under
+  // 8000 (1400 + 6000 = 7400 < 8000). ~72s of narration is only ~1500-2000
+  // output tokens, so 6000 is still ample headroom.
+  const maxTokens = 6000;
   const temperature = 0.7;
 
   let provider = "groq";

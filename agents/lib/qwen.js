@@ -19,7 +19,7 @@ function buildPrompt({ title, entity, situation, channel, scriptText }) {
     "- Mark exactly 1 or 2 scenes as asset_type \"hero\" (the most visually dramatic moments). All other scenes are asset_type \"still\".",
     "- visual_prompt: a short image/video generation prompt describing what is on screen for that scene.",
     "- on_screen_text: a short caption for the scene, or an empty string if none.",
-    "- narration: the exact narration text for that scene, copied from the script.",
+    "- narration: the scene's narration text copied VERBATIM from the script. Do NOT paraphrase, summarize, smooth, rewrite, or 'improve' it. Preserve exact wording, punctuation, and sentence rhythm so the narrator's voice is not flattened. The concatenation of all scenes' narration must equal the original script text.",
     "- gap_type: the kind of curiosity gap this scene opens. One of: new_fact, contradiction, escalation, reframing, hidden_implication, anomaly, causal_fragment, perspective_shift. Two consecutive scenes MUST NOT use the same gap_type.",
     "- gap_state: where this scene sits in the overlapping gap chain. One of: opens (introduces a new tension), partial_resolve (partially answers an earlier gap), resolves (closes a gap). A scene may open a new gap before an earlier one has resolved.",
     "",
