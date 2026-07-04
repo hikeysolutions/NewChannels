@@ -27,7 +27,13 @@ import time
 import alert  # Telegram alert callback for run_with_retry's "then-alert" half
 import validate  # shared validation gate (same agents/ dir); provides check_audio + run_with_retry
 
-SAMPLE_RATE = 16000  # VoxCPM2 emits 16 kHz mono (confirmed via smoke test)
+# VoxCPM2's TRUE output rate is exposed on the loaded model as model.sample_rate
+# (audio_vae out_sample_rate = 48000 Hz). The narrator reads it at runtime and
+# writes the WAV header to match. The old hardcoded 16000 stamped a 16 kHz header
+# on 48 kHz audio, so every narration played at 1/3 speed and dropped ~1.5
+# octaves (the "monster voice" bug). This constant is only a fallback used if the
+# model attribute is ever missing. See NewChannels/tasks/lessons.md.
+DEFAULT_SAMPLE_RATE = 48000
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CHANNEL_DIRS = {"channel_a": "ChannelA", "channel_b": "ChannelB"}
@@ -90,7 +96,7 @@ def load_model():
     return model
 
 
-def render_scene(model, text):
+def render_scene(model, text, sample_rate):
     """Generate one scene's audio as a mono float32 numpy array. Silence/clipping
     validation and retry-once-then-alert live in validate.py (Section 03 step 6),
     so the discipline is shared with every other asset, not re-implemented here."""
@@ -102,7 +108,7 @@ def render_scene(model, text):
 
     samples, report = validate.run_with_retry(
         produce,
-        lambda s: validate.check_audio(samples=s, sample_rate=SAMPLE_RATE),
+        lambda s: validate.check_audio(samples=s, sample_rate=sample_rate),
         label="narration",
         alert=alert.make_alert("narration"),
     )
@@ -110,15 +116,16 @@ def render_scene(model, text):
     return samples, rms
 
 
-def write_wav(path, samples):
-    """Write 16 kHz mono WAV. Prefer soundfile; fall back to the stdlib wave
+def write_wav(path, samples, sample_rate):
+    """Write a mono WAV at the given sample rate (must be the model's real output
+    rate, not an assumed constant). Prefer soundfile; fall back to the stdlib wave
     module so a missing optional dep never blocks a render."""
     import numpy as np
 
     try:
         import soundfile as sf
 
-        sf.write(path, samples, SAMPLE_RATE)
+        sf.write(path, samples, sample_rate)
         return "soundfile"
     except Exception:
         import wave
@@ -127,7 +134,7 @@ def write_wav(path, samples):
         with wave.open(path, "wb") as w:
             w.setnchannels(1)
             w.setsampwidth(2)
-            w.setframerate(SAMPLE_RATE)
+            w.setframerate(sample_rate)
             w.writeframes(pcm.tobytes())
         return "wave"
 
@@ -152,15 +159,19 @@ def main(argv):
 
     os.makedirs(out_dir, exist_ok=True)
     model = load_model()
+    # Read the model's real output rate (48 kHz for VoxCPM2). Never assume it:
+    # assuming 16 kHz here is exactly what produced the slowed-down monster voice.
+    sample_rate = int(getattr(model, "sample_rate", DEFAULT_SAMPLE_RATE))
+    info(f"narration sample rate: {sample_rate} Hz (from model.sample_rate)")
 
     tracks = []
     run_start = time.time()
     for i, scene in enumerate(scenes):
         wav_path = os.path.join(out_dir, f"scene_{i:02d}.wav")
         t0 = time.time()
-        samples, level = render_scene(model, scene["narration"].strip())
-        writer = write_wav(wav_path, samples)
-        duration = len(samples) / SAMPLE_RATE
+        samples, level = render_scene(model, scene["narration"].strip(), sample_rate)
+        writer = write_wav(wav_path, samples, sample_rate)
+        duration = len(samples) / sample_rate
         info(
             f"scene {i:02d}: {duration:.1f}s audio (rms={level:.3f}) in {time.time() - t0:.1f}s "
             f"via {writer} -> {os.path.relpath(wav_path, ROOT)}"
@@ -178,7 +189,7 @@ def main(argv):
         "channel": args.channel,
         "title": manifest.get("title"),
         "source_manifest": os.path.relpath(manifest_path, ROOT),
-        "sample_rate": SAMPLE_RATE,
+        "sample_rate": sample_rate,
         "device": "cpu",
         "tracks": tracks,
     }
