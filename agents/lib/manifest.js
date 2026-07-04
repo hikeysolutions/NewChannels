@@ -22,6 +22,25 @@ const GAP_TYPES = [
 ];
 const GAP_STATES = ["opens", "partial_resolve", "resolves"];
 
+// Render block (Section 07/08). Each scene carries a nested `render` object that
+// anchors the still/hero prompt for period + setting accuracy — the guard against
+// era drift. `era` and `subject_type` use a fixed controlled vocabulary (validated
+// fail-fast, same pattern as gap_type) so garbage values are caught at the source;
+// `location` is a free setting anchor; `style` carries the sentinel STYLE_DEFAULT
+// ("channel_default") in the normal case — meaning "use the channel's locked
+// CHANNEL_STYLE" (resolved in flyt-stills.py) — or a deliberate art-style override.
+const ERAS = ["prehistoric", "ancient", "medieval", "early_modern", "industrial", "modern"];
+const SUBJECT_TYPES = [
+  "period_people", // people of the scene's own historical era
+  "modern_people", // present-day people — the deliberate contrast, NOT the channel's era
+  "animal",
+  "object",
+  "landscape",
+  "structure",
+  "abstract",
+];
+const STYLE_DEFAULT = "channel_default";
+
 function channelDir(channel) {
   const dir = CHANNEL_DIRS[channel];
   if (!dir) throw new Error(`unknown channel "${channel}" (expected channel_a or channel_b)`);
@@ -97,6 +116,28 @@ function validateScenes(sceneObj) {
         `${at}: gap_type "${scene.gap_type}" repeats the previous block's gap_type (no consecutive repeats)`
       );
     }
+    // Render block (Section 07/08): nested { era, location, subject_type, style }.
+    // era + subject_type are controlled vocab (fail-fast, same as gap_type); the
+    // subject_type token is the drift guard (period_people vs modern_people).
+    const render = scene.render;
+    if (!render || typeof render !== "object" || Array.isArray(render)) {
+      throw new Error(`${at}: render must be an object { era, location, subject_type, style }`);
+    }
+    if (!ERAS.includes(render.era)) {
+      throw new Error(`${at}: render.era must be one of ${ERAS.join(", ")} (got "${render.era}")`);
+    }
+    if (!SUBJECT_TYPES.includes(render.subject_type)) {
+      throw new Error(`${at}: render.subject_type must be one of ${SUBJECT_TYPES.join(", ")} (got "${render.subject_type}")`);
+    }
+    // location is a free-text setting anchor, not controlled vocab — it must be a
+    // string but MAY be empty (qwen sometimes omits it; build_prompt just skips a
+    // blank one). The strict fail-fast fields are era + subject_type (the drift guard).
+    if (typeof render.location !== "string") {
+      throw new Error(`${at}: render.location must be a string (empty string allowed)`);
+    }
+    if (typeof render.style !== "string" || render.style.trim() === "") {
+      throw new Error(`${at}: render.style must be a non-empty string ('${STYLE_DEFAULT}' unless overriding)`);
+    }
 
     if (scene.asset_type === "hero") heroCount += 1;
     expectedStart = scene.end;
@@ -109,4 +150,48 @@ function validateScenes(sceneObj) {
   return { scenes, totalDurationSeconds: expectedStart, heroCount };
 }
 
-module.exports = { channelDir, slugify, validateScenes, CHANNEL_DIRS };
+// Deterministic backstop applied to qwen's raw output BEFORE validateScenes, so
+// two common stochastic slips (adjacent gap_type repeats; wrong hero count) get
+// fixed in-process instead of forcing a full stochastic regeneration. Returns a
+// NEW scene object (no mutation of the input, per coding-style).
+function normalizeScenes(sceneObj) {
+  if (!sceneObj || typeof sceneObj !== "object" || !Array.isArray(sceneObj.scenes)) {
+    return sceneObj; // let validateScenes raise the precise, well-worded error
+  }
+  const scenes = sceneObj.scenes.map((s) => ({ ...s }));
+
+  // 1. No two ADJACENT scenes share a gap_type. Left-to-right: whenever scene[i]
+  //    repeats scene[i-1], reassign it to a valid gap_type that differs from BOTH
+  //    neighbours (8 types, at most 2 excluded, so one always exists).
+  for (let i = 1; i < scenes.length; i += 1) {
+    if (scenes[i].gap_type === scenes[i - 1].gap_type) {
+      const prev = scenes[i - 1].gap_type;
+      const next = i + 1 < scenes.length ? scenes[i + 1].gap_type : null;
+      const replacement = GAP_TYPES.find((g) => g !== prev && g !== next);
+      if (replacement) scenes[i] = { ...scenes[i], gap_type: replacement };
+    }
+  }
+
+  // 2. Clamp hero count to exactly 1-2. If zero, promote a mid-script escalation
+  //    beat (the natural dramatic peak; fall back to the middle scene). If more
+  //    than two, keep the first two and demote the rest to still.
+  const heroIdx = scenes.map((s, i) => (s.asset_type === "hero" ? i : -1)).filter((i) => i >= 0);
+  if (scenes.length > 0 && heroIdx.length === 0) {
+    const mid = Math.floor(scenes.length / 2);
+    const escalations = scenes
+      .map((s, i) => (s.gap_type === "escalation" ? i : -1))
+      .filter((i) => i >= 0);
+    const pick = escalations.length
+      ? escalations.reduce((a, b) => (Math.abs(b - mid) < Math.abs(a - mid) ? b : a))
+      : mid;
+    scenes[pick] = { ...scenes[pick], asset_type: "hero" };
+  } else if (heroIdx.length > 2) {
+    heroIdx.slice(2).forEach((i) => {
+      scenes[i] = { ...scenes[i], asset_type: "still" };
+    });
+  }
+
+  return { ...sceneObj, scenes };
+}
+
+module.exports = { channelDir, slugify, validateScenes, normalizeScenes, CHANNEL_DIRS };

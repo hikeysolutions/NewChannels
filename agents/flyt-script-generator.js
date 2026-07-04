@@ -17,7 +17,7 @@ const { loadEnv, expandHome } = require("./lib/env");
 const { openDb, pickCombo, insertVideo, markComboUsed } = require("./lib/db");
 const { generateScript } = require("./lib/groq");
 const { toSceneJson } = require("./lib/qwen");
-const { channelDir, slugify, validateScenes } = require("./lib/manifest");
+const { channelDir, slugify, validateScenes, normalizeScenes } = require("./lib/manifest");
 
 const ROOT = path.resolve(__dirname, "..");
 
@@ -48,16 +48,28 @@ function readStyleGuide(channel) {
   return fs.readFileSync(guidePath, "utf8");
 }
 
-// Stage 2 with retry-once-then-alert (Section 03 step 6 discipline applied to
-// the JSON conversion): one clean retry before giving up, never proceed on bad
-// output.
-async function sceneJsonWithRetry(input) {
-  try {
-    return validateScenes(await toSceneJson(input));
-  } catch (firstErr) {
-    process.stderr.write(`[warn] scene JSON attempt 1 failed: ${firstErr.message}\n[warn] retrying once...\n`);
-    return validateScenes(await toSceneJson(input));
+// Stage 2 with retry-then-alert (Section 03 step 6). Each attempt runs qwen, then
+// a deterministic normalizer (fixes adjacent gap_type repeats + hero count without
+// a fresh regen), then strict validation. The normalizer means the structural
+// slips rarely reach validation at all; the extra attempts cover the remaining
+// stochastic failures (bad render vocab, non-contiguous timings, etc.).
+const SCENE_JSON_ATTEMPTS = 3;
+
+async function sceneJsonWithRetry(input, attempts = SCENE_JSON_ATTEMPTS) {
+  let lastErr;
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      return validateScenes(normalizeScenes(await toSceneJson(input)));
+    } catch (err) {
+      lastErr = err;
+      if (attempt < attempts) {
+        process.stderr.write(
+          `[warn] scene JSON attempt ${attempt}/${attempts} failed: ${err.message}\n[warn] retrying...\n`
+        );
+      }
+    }
   }
+  throw lastErr;
 }
 
 async function main() {

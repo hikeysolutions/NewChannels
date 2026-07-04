@@ -54,3 +54,10 @@ Learned the hard way: check_video was missing the `expected_aspect` kwarg I'd on
 **[2026-07-02] | Chatterbox removed portfolio-wide, replaced by VoxCPM2 | `chatterbox-tts` uninstalled globally. Susan/James/board-agent only referenced it via CPU-monitor/keyword strings (safe). BibleChannel `tts-chatterbox.py` + `voice-agent.js` primary path now broken (falls back to Google TTS) — needs its own migration session to VoxCPM2.**
 
 ---
+
+---
+
+## Reference-image conditioning for NB2 Lite stills — feasibility (2026-07-04)
+
+**[2026-07-04] | NB2 Lite (`gemini-3.1-flash-lite-image`) supports image-conditioned generation, not just text. FOLLOW-UP to consider ONLY if the text-only `CHANNEL_STYLE` prompt doesn't hold character/style consistency well enough after the upcoming combined test.**
+Verified against Google's current image-generation docs: `gemini-3.1-flash-lite-image` accepts up to 14 input images total alongside the text prompt, and "character consistency images" + "style references" are first-class, documented use cases. This is the API's intended mechanism for exactly the era-drift / character-consistency problem already hit once with text-only prompts. Implementation, if built, is an ADDITIVE change to `flyt-stills.py`'s `generate_still()` request body: append image parts as `inline_data` ({mime_type, base64}) to `contents[0].parts[]` next to the existing `{text: prompt}` part (mirrors the response side, which already reads `inlineData.data`). A natural anchor store is a per-channel reference file (e.g. `ChannelA/style/`). Not built yet, by decision — text-only `CHANNEL_STYLE` is tried first. Caveats to weigh before building: (1) reference images likely raise per-image cost/latency (more input tokens per call), verify the delta before using at volume; (2) **the anchor image MUST be a self-generated / self-approved image (e.g. a first approved generation promoted to anchor), NEVER a saved screenshot of Zenn's actual artwork — IP concern.**

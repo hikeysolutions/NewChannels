@@ -43,6 +43,30 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CHANNEL_DIRS = {"channel_a": "ChannelA", "channel_b": "ChannelB"}
 KEY_NAMES = ("NEWCHANNELS_GEMINI_API_KEY", "GEMINI_API_KEY")
 
+# Locked per-channel visual identity, appended to every still's visual_prompt when
+# no explicit --style override is given. This is what keeps the look CONSISTENT
+# across videos (the human source of truth is ChannelX/STYLE_GUIDE.md, Section 08).
+# Channel A confirmed against the Zenn reference channel: minimalist stick-figure
+# characters + flat backgrounds, NOT photorealistic.
+CHANNEL_STYLE = {
+    "channel_a": (
+        "Art style: simple 2D stick-figure vector illustration. Every character has a plain "
+        "circular head, small dot eyes, and thin line-drawn limbs with minimal detail — "
+        "deliberately minimalist, NOT photorealistic and NOT fully-rendered animation. Keep the "
+        "same character proportions and features in every scene for a consistent, recognizable "
+        "identity. Backgrounds are flat solid colors with at most one simple prop or scenery "
+        "silhouette (a tree, a cave, terrain), never detailed or photoreal environments."
+    ),
+    # Channel B's visual identity is not locked yet (see ChannelB/STYLE_GUIDE.md TBDs).
+    "channel_b": None,
+}
+
+# Sentinel for a scene's `style` render-block field (Section 07/08). A scene
+# normally carries style="channel_default", meaning "use CHANNEL_STYLE for this
+# channel"; any other non-empty value is a deliberate per-scene art-style override.
+# Must match STYLE_DEFAULT in agents/lib/manifest.js.
+STYLE_DEFAULT = "channel_default"
+
 
 def info(msg):
     sys.stdout.write(f"[info] {msg}\n")
@@ -112,13 +136,46 @@ def load_manifest(path, channel):
     return data, stills
 
 
-def build_prompt(scene, style_suffix=None):
-    """Prompt = scene.visual_prompt (+ optional style suffix). Full STYLE_GUIDE
-    blending is deferred until the per-channel visual spec is locked (Section 08)."""
-    prompt = scene["visual_prompt"].strip()
-    if style_suffix:
-        prompt = f"{prompt}. {style_suffix.strip()}"
-    return prompt
+def build_prompt(scene, channel, style_override=None):
+    """Assemble the still prompt from: scene.visual_prompt, the render-block
+    descriptors (era/location/subject_type, Section 07/08 — the period/setting
+    accuracy guard against era drift), and the resolved art style.
+
+    Style resolution, in priority order:
+      1. an explicit --style CLI override (one-off experiments);
+      2. a per-scene deliberate override (scene.style is set and != STYLE_DEFAULT);
+      3. otherwise the channel's locked CHANNEL_STYLE.
+    Scenes normally carry style="channel_default", so the look stays consistent
+    without re-specifying it per scene. Missing render fields degrade gracefully
+    here (manifest.js is the strict gate); a channel with no locked style adds
+    nothing."""
+    parts = [scene["visual_prompt"].strip()]
+
+    # Render block anchors era/location/subject so period accuracy no longer relies
+    # on the prose alone to convey "ancient" vs "modern" (the drift guard). Tokens
+    # are humanized (period_people -> "period people") for the image model.
+    render = scene.get("render") or {}
+    descriptors = []
+    for label, field in (("Era", "era"), ("Location", "location"), ("Subject", "subject_type")):
+        val = render.get(field)
+        if isinstance(val, str) and val.strip():
+            descriptors.append(f"{label}: {val.strip().replace('_', ' ')}")
+    if descriptors:
+        parts.append(". ".join(descriptors))
+
+    # Art style is governed by the channel-level CHANNEL_STYLE. render.style is only
+    # a scene-level override (rare); an explicit --style CLI flag still wins over all.
+    scene_style = render.get("style")
+    if style_override:
+        style = style_override
+    elif isinstance(scene_style, str) and scene_style.strip() and scene_style.strip() != STYLE_DEFAULT:
+        style = scene_style.strip()
+    else:
+        style = CHANNEL_STYLE.get(channel)
+    if style:
+        parts.append(style.strip())
+
+    return ". ".join(p for p in parts if p)
 
 
 def generate_still(prompt, aspect, key):
@@ -150,10 +207,10 @@ def generate_still(prompt, aspect, key):
     raise RuntimeError(f"NB2 returned no image part (finishReason={candidates[0].get('finishReason')})")
 
 
-def render_scene_still(scene, out_path, *, aspect, key, style):
+def render_scene_still(scene, out_path, *, channel, aspect, key, style):
     """Generate + validate one still with retry-once-then-alert (validate.py owns
     the discipline). Returns the validate Report."""
-    prompt = build_prompt(scene, style)
+    prompt = build_prompt(scene, channel, style)
 
     def produce():
         img = generate_still(prompt, aspect, key)
@@ -187,7 +244,7 @@ def main(argv):
         total_chars = sum(len(s["visual_prompt"]) for _, s in stills)
         info(f"[dry-run] {len(stills)} still scenes, {total_chars} prompt chars, no API calls, no images written")
         for i, scene in stills:
-            info(f"  scene {i:02d} prompt: {build_prompt(scene, args.style)[:90]}")
+            info(f"  scene {i:02d} prompt: {build_prompt(scene, args.channel, args.style)[:90]}")
         return 0
 
     key = api_key()
@@ -198,7 +255,7 @@ def main(argv):
     for i, scene in stills:
         jpg_path = os.path.join(out_dir, f"scene_{i:02d}.jpg")
         t0 = time.time()
-        report = render_scene_still(scene, jpg_path, aspect=args.aspect, key=key, style=args.style)
+        report = render_scene_still(scene, jpg_path, channel=args.channel, aspect=args.aspect, key=key, style=args.style)
         dims = next((c.metrics for c in report.checks if c.name == "aspect"), {})
         w, h = dims.get("width"), dims.get("height")
         info(f"scene {i:02d}: {w}x{h} jpg in {time.time() - t0:.1f}s -> {os.path.relpath(jpg_path, ROOT)}")

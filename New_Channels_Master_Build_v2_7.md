@@ -19,6 +19,7 @@ Source: persona/schema design session, July 2026. Consolidates the gap-chain nar
 | NEW — Section 06, RENUMBERED 06a | Full narrator persona system added as Section 06. The prior Section 06 (`NO-GROWTH THRESHOLD`) is renumbered to Section 06a; all in-doc cross-references updated to match. Includes Decision Framework, Default Lens, Forbidden Shortcuts, and a Voice Consistency QA rubric per channel. **Section 06 is frozen after this revision** — further edits require an observed `qa_flags` failure pattern, not theoretical improvement. |
 | NEW — 11, Immediate Action Items | Added: build `ChannelB/STYLE_GUIDE.md` (confirmed missing entirely). Added: reconcile on-disk filename with document title (this file). Added: revisit Channel B naming ("Ten Deep" rejected as too number-specific; full naming exercise deferred, not resolved, this revision). |
 | Confirmed via Claude Code audit | `flyt-script-generator.js` and the full `flyt-` agent set are built and real (not stubs). `entity_situation_bank` has 7 seed rows, Channel A only, all `used_count = 0`. `videos` table has zero rows. Schema changes in this revision are free (no migration, no data loss). |
+| 07 — Thumbnail Formula (Channel A) | Corrected "3-subject cartoon style" to a text-forward treatment (bold high-contrast title text as the dominant element + single accent color, one central character with exaggerated expression, minimal supporting elements), confirmed against a direct screenshot of the Zenn reference channel. Synced with `ChannelA/STYLE_GUIDE.md` (Section 07/08); the earlier description did not match what's actually observed. |
 
 ## CHANGELOG: v2.5 → v2.6
 
@@ -787,7 +788,7 @@ Score ≤5/10 → `resolution = 'video_rejected'` in `qa_flags`, same discipline
 
 ## 07. THUMBNAIL FORMULAS
 
-**Channel A (Historical):** Adavia's "3-subject cartoon style" — center subject unfamiliar/curiosity-inducing, flanked by 1–2 supporting figures for context. Emotional read: intrigue, not shock.
+**Channel A (Historical):** Text-forward treatment (confirmed against the Zenn reference channel, replaces the earlier "3-subject cartoon style" description). Bold, high-contrast title text is the dominant visual element, often paired with a single accent color; one central character reacting with an exaggerated expression; minimal supporting elements. Emotional read: intrigue, not shock. See `ChannelA/STYLE_GUIDE.md` for the full spec.
 
 **Channel B (Countdown):** Single dominant subject, high-contrast, dramatic/exaggerated. Optional number badge overlay to reinforce the countdown promise visually.
 
