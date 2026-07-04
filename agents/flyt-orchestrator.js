@@ -16,6 +16,7 @@
 // Usage:
 //   node agents/flyt-orchestrator.js --channel channel_a
 //   node agents/flyt-orchestrator.js --channel channel_a --entity "Vikings" --situation "during war"
+//   node agents/flyt-orchestrator.js --channel channel_a --dry-run   (no spend: script+QA real, gen stages dry, assemble/upload/telegram skipped)
 
 const fs = require("fs");
 const path = require("path");
@@ -48,6 +49,7 @@ function parseArgs(argv) {
     else if (a === "--video-id") args.videoId = Number(argv[++i]);
     else if (a === "--entity") args.entity = argv[++i];
     else if (a === "--situation") args.situation = argv[++i];
+    else if (a === "--dry-run") args.dryRun = true;
     else throw new Error(`unknown argument: ${a}`);
   }
   if (args.channel !== "channel_a" && args.channel !== "channel_b") {
@@ -283,7 +285,18 @@ async function main() {
   const args = parseArgs(process.argv.slice(2));
   const env = loadEnv();
 
-  if (!preflight(env)) process.exit(2);
+  // Dry-run exercises the full chain with no paid stages, so it only needs the
+  // (free) script model key; the paid-key preflight is skipped.
+  if (args.dryRun) {
+    const scriptKey = env.NEWCHANNELS_GROQ_API_KEY || env.GROQ_API_KEY || env.CEREBRAS_API_KEY;
+    if (!scriptKey || !String(scriptKey).trim()) {
+      process.stderr.write("[orch] DRY-RUN PREFLIGHT FAILED - need a Groq/Cerebras key for script generation.\n");
+      process.exit(2);
+    }
+    log("dry-run: paid-key preflight skipped (only script generation + local QA run)");
+  } else if (!preflight(env)) {
+    process.exit(2);
+  }
 
   const channel = args.channel;
   const dbPath = env.NEWCHANNELS_DB_PATH || "~/OpenClaw/NewChannels/db/tracking.db";
@@ -342,6 +355,26 @@ async function main() {
       return;
     }
     log("QA gate: clear — no unresolved blocking flags, proceeding to generation");
+
+    // ---- DRY-RUN branch: exercise every stage that has a --dry-run mode with no
+    // API calls / no writes, then stop before the stages that require real assets
+    // or paid I/O (assemble/cloudinary/telegram). Confirms the chain wires up end
+    // to end under today's combined code without spending anything. ----
+    if (args.dryRun) {
+      setStatus(db, videoId, "generating");
+      runStage("stills (dry)", PYTHON, ["agents/flyt-stills.py", "--channel", channel, "--manifest", manifestRel, "--dry-run"]);
+      runStage("hero (dry)", PYTHON, ["agents/flyt-hero.py", "--channel", channel, "--manifest", manifestRel, "--dry-run"]);
+      runStage("narrator (dry)", PYTHON, ["agents/flyt-narrator.py", "--channel", channel, "--manifest", manifestRel, "--dry-run"]);
+      setStatus(db, videoId, "dry_run_complete");
+      log("================ DRY-RUN COMPLETE ================");
+      log(`combo: ${combo.entity} / ${combo.situation} (bank id ${combo.id})`);
+      log(`video id ${videoId}, slug "${slug}"`);
+      log(`QA: factual=${qa.factual} voice=${voiceStr} gap_logic=${qa.gapLogic} style_minor=${qa.styleMinor} -> gate CLEAR`);
+      log("stills/hero/narrator dry-run OK. Skipped (need real assets / paid I/O): assemble, cloudinary, telegram.");
+      log("No API calls made, no media written.");
+      log("=================================================");
+      return;
+    }
 
     // STEP 4 — generation (stills, hero, narration). Each agent self-validates with
     // retry-once-then-alert internally (validate.py); a hard failure throws here.
