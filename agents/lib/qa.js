@@ -15,8 +15,12 @@
 const { execFileSync } = require("child_process");
 const { personaFor } = require("./personas");
 
-// Categories the gate treats as blocking. style_minor is deliberately excluded.
-const BLOCKING_CATEGORIES = ["factual_accuracy", "voice_consistency", "gap_logic"];
+// Categories the gate treats as blocking. Only voice_consistency (<=5/10) and
+// gap_logic (stagnation) halt generation. factual_accuracy and style_minor are
+// ADVISORY: factual flags are still logged to qa_flags, but per Section 00c they
+// are a manual weekly-review signal, not a per-video gate — on a history channel
+// nearly every specific claim would otherwise block a well-formed script.
+const BLOCKING_CATEGORIES = ["voice_consistency", "gap_logic"];
 // Resolutions that still count as "unresolved" for gating purposes.
 const OPEN_RESOLUTIONS = ["pending", "video_rejected"];
 
