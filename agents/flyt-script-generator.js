@@ -16,8 +16,9 @@ const path = require("path");
 const { loadEnv, expandHome } = require("./lib/env");
 const { openDb, pickCombo, insertVideo, markComboUsed } = require("./lib/db");
 const { generateScript } = require("./lib/groq");
-const { toSceneJson } = require("./lib/qwen");
+const { toSceneJson, regenerateVisualPrompt } = require("./lib/qwen");
 const { channelDir, slugify, validateScenes, normalizeScenes } = require("./lib/manifest");
+const { repairVisualPrompts } = require("./lib/vpcheck");
 
 const ROOT = path.resolve(__dirname, "..");
 
@@ -106,6 +107,32 @@ async function main() {
     process.stdout.write(
       `[info] ${validated.scenes.length} scenes, ${validated.heroCount} hero, ~${validated.totalDurationSeconds}s\n`
     );
+
+    // Deterministic visual_prompt gate (vpcheck): the prose-craft slips qwen keeps
+    // making (non-visual/audio cues, reused action clauses, near-identical scenes)
+    // are not caught by structural validation, so we audit + regenerate only the
+    // offending scenes here. Anything that survives the repair budget is stamped
+    // scene.qa_flags for the human approval gate rather than shipped silently.
+    const repair = await repairVisualPrompts(validated.scenes, {
+      regenerate: ({ scene, avoid, otherPrompts }) =>
+        regenerateVisualPrompt({
+          scene,
+          avoid,
+          otherPrompts,
+          channel: args.channel,
+          entity: combo.entity,
+          situation: combo.situation,
+        }),
+      maxAttempts: 2,
+    });
+    validated.scenes = repair.scenes;
+    if (repair.repaired.length || repair.flagged.length) {
+      process.stdout.write(
+        `[info] vpcheck: repaired ${repair.repaired.length} scene(s)` +
+          (repair.flagged.length ? `, qa_flagged ${repair.flagged.length} (scenes ${repair.flagged.join(", ")})` : "") +
+          "\n"
+      );
+    }
 
     const slug = slugify(title);
     const dir = channelDir(args.channel);
