@@ -36,10 +36,12 @@ Confirmed against the Zenn reference channel (replaces the earlier photorealisti
   different look each time. Encoded as CHANNEL_STYLE["channel_a"] in agents/flyt-stills.py.
 - Backgrounds: flat or simply-illustrated — solid colors with at most one simple prop/scenery
   silhouette (a tree, a cave, terrain). Never detailed or photoreal environments.
-- Stills/hero shots: full-frame, Ken Burns / slow-zoom motion on stills
+- Stills-only: EVERY scene is a stick-figure still. Channel A uses NO video clips
+  (no Seedance/hero shots) — a photoreal clip would break the stick-figure visual
+  consistency. Motion comes from full-frame Ken Burns / slow-zoom on the stills.
 - Captions: lower third, clean sans, high contrast
 - Color theme: locked per channel (TBD, set before scaling)
-- Transitions: soft cuts between beats, hero clip drops at its designated timestamp
+- Transitions: soft cuts between beats (still to still); no hero clip inserts
 - Persistent element: small era/timestamp tag (e.g. "Viking Age, c. 900 AD")
 
 ## Hard Rules

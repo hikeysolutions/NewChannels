@@ -60,7 +60,7 @@ async function sceneJsonWithRetry(input, attempts = SCENE_JSON_ATTEMPTS) {
   let lastErr;
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
     try {
-      return validateScenes(normalizeScenes(await toSceneJson(input)));
+      return validateScenes(normalizeScenes(await toSceneJson(input), input.channel), input.channel);
     } catch (err) {
       lastErr = err;
       if (attempt < attempts) {

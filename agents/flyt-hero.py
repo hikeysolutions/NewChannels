@@ -117,8 +117,8 @@ def load_manifest(path, channel):
         if not isinstance(scene.get("start"), (int, float)) or not isinstance(scene.get("end"), (int, float)):
             raise ValueError(f"scene[{i}].start and end must be numbers")
         heroes.append((i, scene))
-    if not heroes:
-        raise ValueError("manifest has no hero scenes to render")
+    # Zero heroes is valid for stills-only channels (e.g. channel_a). main() writes
+    # an empty sidecar and makes no API calls rather than treating it as an error.
     return data, heroes
 
 
@@ -233,7 +233,11 @@ def main(argv):
         info(f"[dry-run] {len(heroes)} hero scenes, no API calls, no video written")
         return 0
 
-    key = api_key()
+    # Stills-only channel (no hero scenes): skip the API key + generation loop
+    # entirely and just write the empty sidecar the downstream stages expect.
+    if not heroes:
+        info("no hero scenes (stills-only channel); writing empty sidecar, no API calls")
+    key = api_key() if heroes else None
     os.makedirs(out_dir, exist_ok=True)
 
     assets = []

@@ -57,8 +57,9 @@ function slugify(title) {
 }
 
 // Validate the qwen scene object and return a normalized manifest. Throws with
-// a specific message on the first problem found.
-function validateScenes(sceneObj) {
+// a specific message on the first problem found. `channel` gates the hero rule:
+// channel_a is stills-only (0 heroes), every other channel keeps the 1-2 rule.
+function validateScenes(sceneObj, channel) {
   if (!sceneObj || typeof sceneObj !== "object") {
     throw new Error("manifest is not an object");
   }
@@ -143,7 +144,11 @@ function validateScenes(sceneObj) {
     expectedStart = scene.end;
   });
 
-  if (heroCount < 1 || heroCount > 2) {
+  if (channel === "channel_a") {
+    if (heroCount !== 0) {
+      throw new Error(`channel_a is stills-only: expected 0 hero scenes, got ${heroCount}`);
+    }
+  } else if (heroCount < 1 || heroCount > 2) {
     throw new Error(`expected 1-2 hero scenes, got ${heroCount}`);
   }
 
@@ -154,7 +159,7 @@ function validateScenes(sceneObj) {
 // two common stochastic slips (adjacent gap_type repeats; wrong hero count) get
 // fixed in-process instead of forcing a full stochastic regeneration. Returns a
 // NEW scene object (no mutation of the input, per coding-style).
-function normalizeScenes(sceneObj) {
+function normalizeScenes(sceneObj, channel) {
   if (!sceneObj || typeof sceneObj !== "object" || !Array.isArray(sceneObj.scenes)) {
     return sceneObj; // let validateScenes raise the precise, well-worded error
   }
@@ -172,23 +177,31 @@ function normalizeScenes(sceneObj) {
     }
   }
 
-  // 2. Clamp hero count to exactly 1-2. If zero, promote a mid-script escalation
-  //    beat (the natural dramatic peak; fall back to the middle scene). If more
-  //    than two, keep the first two and demote the rest to still.
-  const heroIdx = scenes.map((s, i) => (s.asset_type === "hero" ? i : -1)).filter((i) => i >= 0);
-  if (scenes.length > 0 && heroIdx.length === 0) {
-    const mid = Math.floor(scenes.length / 2);
-    const escalations = scenes
-      .map((s, i) => (s.gap_type === "escalation" ? i : -1))
-      .filter((i) => i >= 0);
-    const pick = escalations.length
-      ? escalations.reduce((a, b) => (Math.abs(b - mid) < Math.abs(a - mid) ? b : a))
-      : mid;
-    scenes[pick] = { ...scenes[pick], asset_type: "hero" };
-  } else if (heroIdx.length > 2) {
-    heroIdx.slice(2).forEach((i) => {
-      scenes[i] = { ...scenes[i], asset_type: "still" };
-    });
+  // 2. Hero handling is channel-gated. channel_a is stills-only: demote any hero
+  //    qwen emitted to still (no video clips break the stick-figure look). Every
+  //    other channel keeps the 1-2 clamp: if zero, promote a mid-script escalation
+  //    beat (the natural dramatic peak; fall back to the middle scene); if more
+  //    than two, keep the first two and demote the rest.
+  if (channel === "channel_a") {
+    for (let i = 0; i < scenes.length; i += 1) {
+      if (scenes[i].asset_type === "hero") scenes[i] = { ...scenes[i], asset_type: "still" };
+    }
+  } else {
+    const heroIdx = scenes.map((s, i) => (s.asset_type === "hero" ? i : -1)).filter((i) => i >= 0);
+    if (scenes.length > 0 && heroIdx.length === 0) {
+      const mid = Math.floor(scenes.length / 2);
+      const escalations = scenes
+        .map((s, i) => (s.gap_type === "escalation" ? i : -1))
+        .filter((i) => i >= 0);
+      const pick = escalations.length
+        ? escalations.reduce((a, b) => (Math.abs(b - mid) < Math.abs(a - mid) ? b : a))
+        : mid;
+      scenes[pick] = { ...scenes[pick], asset_type: "hero" };
+    } else if (heroIdx.length > 2) {
+      heroIdx.slice(2).forEach((i) => {
+        scenes[i] = { ...scenes[i], asset_type: "still" };
+      });
+    }
   }
 
   return { ...sceneObj, scenes };

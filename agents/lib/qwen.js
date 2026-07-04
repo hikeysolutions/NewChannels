@@ -9,6 +9,11 @@ const OLLAMA_URL = "http://localhost:11434/api/generate";
 const MODEL = "qwen2.5:7b";
 
 function buildPrompt({ title, entity, situation, channel, scriptText }) {
+  // Hero rule is channel-gated: channel_a is stills-only (no video clips break
+  // the stick-figure look); other channels keep the 1-2 hero-scene rule.
+  const heroRule = channel === "channel_a"
+    ? "- HARD REQUIREMENT: EVERY scene is asset_type \"still\". This channel is stills-only — NEVER use asset_type \"hero\" (no video clips at all). A generation with any hero scene is INVALID and will be rejected."
+    : "- HARD REQUIREMENT: exactly 1 or 2 scenes in the whole video MUST have asset_type \"hero\" (NEVER zero, NEVER more than two) — the single most visually dramatic moment, or two at most. EVERY other scene is asset_type \"still\". A generation with zero hero scenes is INVALID and will be rejected.";
   return [
     "You convert a narration script into a scene manifest. Output ONLY valid JSON, no prose.",
     "",
@@ -16,7 +21,7 @@ function buildPrompt({ title, entity, situation, channel, scriptText }) {
     "- Split the script into ordered scenes, one scene per beat or natural narration chunk.",
     "- Give each scene a start and end time in whole seconds. Scenes are contiguous: scene[n].start == scene[n-1].end. First scene starts at 0.",
     "- Estimate duration from narration length at roughly 2.5 words per second.",
-    "- HARD REQUIREMENT: exactly 1 or 2 scenes in the whole video MUST have asset_type \"hero\" (NEVER zero, NEVER more than two) — the single most visually dramatic moment, or two at most. EVERY other scene is asset_type \"still\". A generation with zero hero scenes is INVALID and will be rejected.",
+    heroRule,
     "- visual_prompt: a concrete, filmable SHOT DESCRIPTION, not a mood summary. Each visual_prompt MUST specify, in this spirit:",
     "    (a) FRAMING / ANGLE: e.g. wide establishing shot, low-angle close-up, overhead/top-down, over-the-shoulder, side profile. Never omit the shot type.",
     "    (b) SUBJECT COUNT: roughly how many subjects are in frame (e.g. a single figure, two figures, a small group of five). Be specific, not 'people'.",
