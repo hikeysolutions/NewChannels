@@ -90,20 +90,23 @@ def load_model():
     model = VoxCPM.from_pretrained(
         device="cpu",              # see module docstring — do not change to mps
         local_files_only=True,     # weights are cached; never hit the network
-        load_denoiser=False,       # no reference audio -> denoiser is dead weight (lessons 2026-07-02)
+        load_denoiser=False,       # reference is a clean, self-generated clip; the denoiser (which cleans NOISY reference input) is dead weight here
     )
     info(f"model loaded in {time.time() - t0:.1f}s")
     return model
 
 
-def render_scene(model, text, sample_rate):
-    """Generate one scene's audio as a mono float32 numpy array. Silence/clipping
-    validation and retry-once-then-alert live in validate.py (Section 03 step 6),
-    so the discipline is shared with every other asset, not re-implemented here."""
+def render_scene(model, text, sample_rate, prompt_wav_path, prompt_text):
+    """Generate one scene's audio as a mono float32 numpy array, CLONED from the
+    channel's fixed reference voice (prompt_wav_path + prompt_text). Cloning is what
+    locks the narrator identity across scenes: VoxCPM2's design mode re-samples the
+    voice on every call (unseeded stochastic sampling), so a bare generate(text=...)
+    drifts scene to scene. See tasks/lessons.md. Silence/clipping validation and
+    retry-once-then-alert live in validate.py, shared with every other asset."""
     import numpy as np
 
     def produce():
-        audio = model.generate(text=text)
+        audio = model.generate(text=text, prompt_wav_path=prompt_wav_path, prompt_text=prompt_text)
         return np.asarray(audio, dtype="float32").reshape(-1)
 
     samples, report = validate.run_with_retry(
@@ -157,19 +160,36 @@ def main(argv):
         info(f"[dry-run] {len(scenes)} scenes, {total_chars} narration chars, no model loaded, no audio written")
         return 0
 
+    # The channel's fixed narrator reference. Every scene clones this one voice so
+    # the narrator identity stays consistent (design mode re-randomizes per call).
+    # Regenerate it with scripts/gen_reference-style design-mode call if it is ever
+    # lost; see tasks/lessons.md.
+    ref_wav = os.path.join(channel_dir, "voice", "narrator_a.wav")
+    ref_txt = os.path.join(channel_dir, "voice", "narrator_a.txt")
+    if not os.path.isfile(ref_wav) or not os.path.isfile(ref_txt):
+        raise FileNotFoundError(
+            f"missing narrator reference for {args.channel}: expected {ref_wav} + {ref_txt}. "
+            "Generate the locked reference clip (VoxCPM2 design mode) before narrating."
+        )
+    with open(ref_txt, "r", encoding="utf-8") as fh:
+        prompt_text = fh.read().strip()
+    if not prompt_text:
+        raise ValueError(f"narrator reference transcript is empty: {ref_txt}")
+
     os.makedirs(out_dir, exist_ok=True)
     model = load_model()
     # Read the model's real output rate (48 kHz for VoxCPM2). Never assume it:
     # assuming 16 kHz here is exactly what produced the slowed-down monster voice.
     sample_rate = int(getattr(model, "sample_rate", DEFAULT_SAMPLE_RATE))
     info(f"narration sample rate: {sample_rate} Hz (from model.sample_rate)")
+    info(f"cloning voice from reference: {os.path.relpath(ref_wav, ROOT)}")
 
     tracks = []
     run_start = time.time()
     for i, scene in enumerate(scenes):
         wav_path = os.path.join(out_dir, f"scene_{i:02d}.wav")
         t0 = time.time()
-        samples, level = render_scene(model, scene["narration"].strip(), sample_rate)
+        samples, level = render_scene(model, scene["narration"].strip(), sample_rate, ref_wav, prompt_text)
         writer = write_wav(wav_path, samples, sample_rate)
         duration = len(samples) / sample_rate
         info(
