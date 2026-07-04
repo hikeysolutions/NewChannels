@@ -110,6 +110,51 @@ def _index_by_scene(sidecar, key, asset_field):
     return out
 
 
+def _index_shot_stills(sidecar):
+    """Map shot_index -> resolved jpg for the batch stills sidecar (keyed by
+    shot_index, not scene index)."""
+    out = {}
+    for item in sidecar.get("assets", []):
+        idx = item.get("shot_index")
+        rel = item.get("jpg")
+        if idx is None or not rel:
+            continue
+        out[idx] = resolve_asset(rel)
+    return out
+
+
+def build_plan_shots(base, slug):
+    """Channel A shot-granularity plan. Each SHOT is a segment: its own still,
+    Ken Burns-zoomed for the shot's duration, with audio = the beat's narration wav
+    sliced at the shot's offset ([start, end) within the beat). Shots tile each
+    beat contiguously (shots.js), so concatenating the segments reproduces the full
+    per-beat narration and, across beats, the whole video."""
+    manifests_dir = os.path.join(base, "manifests")
+    manifest = _load_json(os.path.join(manifests_dir, f"{slug}.json"))
+    shots_doc = _load_json(os.path.join(manifests_dir, f"{slug}.shots.json"))
+    stills = _index_shot_stills(_load_json(os.path.join(manifests_dir, f"{slug}.stills.json")))
+    narration = _index_by_scene(_load_json(os.path.join(manifests_dir, f"{slug}.narration.json")), "tracks", "wav")
+
+    shots = shots_doc.get("shots")
+    if not isinstance(shots, list) or not shots:
+        raise ValueError("shots.json shots must be a non-empty array")
+
+    plan = []
+    for s in sorted(shots, key=lambda x: x["shot_index"]):
+        si, bi = s["shot_index"], s["beat_index"]
+        jpg = stills.get(si)
+        if not jpg or not os.path.isfile(jpg):
+            raise FileNotFoundError(f"shot {si}: still not found: {jpg}")
+        wav = narration.get(bi)
+        if wav and not os.path.isfile(wav):
+            raise FileNotFoundError(f"shot {si}: beat {bi} narration wav not found: {wav}")
+        duration = max(round(float(s["end"]) - float(s["start"]), 3), MIN_SCENE_SECONDS)
+        plan.append({"i": si, "type": "still", "src": jpg, "wav": wav,
+                     "audio_offset": round(float(s["start"]), 3),
+                     "duration": duration, "clip_dur": None})
+    return manifest, plan
+
+
 def build_plan(base, slug):
     """Read manifest + three sidecars, return an ordered list of per-scene plans."""
     manifests_dir = os.path.join(base, "manifests")
@@ -188,6 +233,11 @@ def render_segment(scene, out_path):
         inputs = ["-i", scene["src"]]
 
     if has_audio:
+        # Shot-mode slices the beat wav: seek to the shot's offset (input -ss,
+        # accurate on wav) so the audio filter then trims/pads exactly d from there.
+        offset = float(scene.get("audio_offset") or 0.0)
+        if offset > 0:
+            inputs += ["-ss", f"{offset}"]
         inputs += ["-i", scene["wav"]]
     afilter = _audio_filter(has_audio, d)
     filtergraph = f"{vfilter};{afilter}"
@@ -232,7 +282,14 @@ def concat_segments(segment_paths, out_path):
 def assemble(base, slug):
     """Full assembly. Returns (out_path, expected_duration). Rendered fresh each
     call so validate.run_with_retry can re-run it cleanly (no API cost)."""
-    manifest, plan = build_plan(base, slug)
+    # Channel A shot-granularity if a shots.json exists; else the scene-per-asset
+    # plan (Channel B / legacy). Both yield the same segment shape, so the render +
+    # concat below are shared.
+    shots_path = os.path.join(base, "manifests", f"{slug}.shots.json")
+    if os.path.isfile(shots_path):
+        manifest, plan = build_plan_shots(base, slug)
+    else:
+        manifest, plan = build_plan(base, slug)
     out_dir = os.path.join(base, "outputs")
     os.makedirs(out_dir, exist_ok=True)
     out_path = os.path.join(out_dir, f"{slug}.mp4")
