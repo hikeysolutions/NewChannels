@@ -32,6 +32,7 @@ import time
 import urllib.error
 import urllib.request
 
+import alert  # Telegram alert callback for run_with_retry's "then-alert" half
 import validate  # shared validation gate (same agents/ dir): check_still + run_with_retry
 
 MODEL = "gemini-3.1-flash-lite-image"
@@ -164,6 +165,7 @@ def render_scene_still(scene, out_path, *, aspect, key, style):
         produce,
         lambda p: validate.check_still(p, expected_aspect=aspect),
         label=f"still {os.path.basename(out_path)}",
+        alert=alert.make_alert(f"stills / {os.path.basename(out_path)}"),
     )
     return report
 

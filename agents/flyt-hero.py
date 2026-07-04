@@ -33,6 +33,7 @@ import time
 import urllib.error
 import urllib.request
 
+import alert  # Telegram alert callback for run_with_retry's "then-alert" half
 import validate  # shared validation gate: check_video + run_with_retry
 
 GENERATE_URL = "https://api.atlascloud.ai/api/v1/model/generateVideo"
@@ -206,6 +207,7 @@ def render_scene_hero(scene, out_path, *, model, resolution, aspect, key):
         lambda p: validate.check_video(p, expected_aspect=aspect, expected_duration=requested,
                                        duration_tol_seconds=DURATION_TOL),
         label=f"hero {os.path.basename(out_path)}",
+        alert=alert.make_alert(f"hero / {os.path.basename(out_path)}"),
     )
     return report, requested
 

@@ -24,6 +24,7 @@ import os
 import sys
 import time
 
+import alert  # Telegram alert callback for run_with_retry's "then-alert" half
 import validate  # shared validation gate (same agents/ dir); provides check_audio + run_with_retry
 
 SAMPLE_RATE = 16000  # VoxCPM2 emits 16 kHz mono (confirmed via smoke test)
@@ -103,6 +104,7 @@ def render_scene(model, text):
         produce,
         lambda s: validate.check_audio(samples=s, sample_rate=SAMPLE_RATE),
         label="narration",
+        alert=alert.make_alert("narration"),
     )
     rms = next(c.metrics["rms"] for c in report.checks if c.name == "silence")
     return samples, rms
