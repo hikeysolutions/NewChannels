@@ -25,6 +25,7 @@ const { execFileSync } = require("child_process");
 
 const { loadEnv } = require("./lib/env");
 const { openDb } = require("./lib/db");
+const { runQaPass, blockingFlags } = require("./lib/qa");
 
 const ROOT = path.resolve(__dirname, "..");
 const CHANNEL_DIRS = { channel_a: "ChannelA", channel_b: "ChannelB" };
@@ -158,44 +159,16 @@ function setStatus(db, videoId, status, extra = {}) {
   log(`videos[${videoId}] -> ${status}`);
 }
 
-// ---- lightweight QA / accuracy pass (Section 03 step 2). No separate step exists
-// in flyt-script-generator.js (confirmed), so this is the second-pass flag version:
-// ask the local qwen model to flag unsupported/invented claims, log each to
-// qa_flags with category='factual_accuracy'. Flags are LOGGED, never auto-corrected. ----
-function qaAccuracyPass(db, videoId, channel, scriptText) {
-  const prompt =
-    "You are a fact-checker. Read the narration script and list ONLY claims that are " +
-    "unsupported, invented, or suspiciously specific (fake dates, invented quotes, made-up " +
-    "numbers). Output STRICT JSON: {\"flags\":[{\"claim\":\"...\",\"scene\":\"...\"}]}. " +
-    "Empty flags array if nothing is dubious.\n\nSCRIPT:\n" + scriptText;
-  const body = JSON.stringify({
-    model: "qwen2.5:7b",
-    prompt,
-    format: "json",
-    stream: false,
-    options: { temperature: 0.1 },
-  });
-  let flags = [];
-  try {
-    const out = execFileSync(
-      "curl",
-      ["-s", "-m", "60", "http://localhost:11434/api/generate", "-d", body],
-      { encoding: "utf8" }
-    );
-    const parsed = JSON.parse(JSON.parse(out).response);
-    flags = Array.isArray(parsed.flags) ? parsed.flags : [];
-  } catch (err) {
-    process.stderr.write(`[orch] QA pass could not run (${err.message}); logging zero flags, continuing\n`);
+// ---- QA / accuracy gate (Section 03 step 2 + Section 06 rubric). The scoring
+// itself lives in lib/qa.js (factual_accuracy, voice_consistency, gap_logic,
+// style_minor). This helper just loads the scene list the pass needs. ----
+function loadScenes(manifestRel) {
+  const manifest = JSON.parse(fs.readFileSync(path.join(ROOT, manifestRel), "utf8"));
+  const scenes = manifest.scenes || manifest.blocks || [];
+  if (!Array.isArray(scenes) || scenes.length === 0) {
+    throw new Error(`manifest ${manifestRel} has no scenes to QA`);
   }
-  const ins = db.prepare(
-    `INSERT INTO qa_flags (video_id, channel, flagged_claim, scene_reference, category)
-     VALUES (?, ?, ?, ?, 'factual_accuracy')`
-  );
-  for (const f of flags) {
-    if (f && f.claim) ins.run(videoId, channel, String(f.claim), f.scene ? String(f.scene) : null);
-  }
-  log(`QA pass: ${flags.length} factual_accuracy flag(s) logged`);
-  return flags.length;
+  return scenes;
 }
 
 // ---- Cloudinary signed upload (Section 02a). Pure node: signed multipart POST. ----
@@ -339,11 +312,36 @@ async function main() {
     const slug = path.basename(manifestRel, ".json");
     log(`video id ${videoId}, slug "${slug}", manifest ${manifestRel}`);
 
-    // STEP 3 — QA / accuracy pass (Section 03 step 2), log flags, then qa_pending.
+    // STEP 3 — QA / accuracy pass (Section 03 step 2 + Section 06 rubric). Scores
+    // factual accuracy, voice consistency, and gap logic; logs each to qa_flags.
     const scriptRel = m[2];
     const scriptText = fs.readFileSync(path.join(ROOT, scriptRel), "utf8");
-    qaAccuracyPass(db, videoId, channel, scriptText);
+    const scenes = loadScenes(manifestRel);
     setStatus(db, videoId, "qa_pending");
+    const qa = runQaPass(db, { videoId, channel, scriptText, scenes });
+    const voiceStr = qa.voice && qa.voice.total != null ? `${qa.voice.total}/10` : "unscored";
+    log(`QA pass: factual=${qa.factual} voice=${voiceStr} gap_logic=${qa.gapLogic} style_minor=${qa.styleMinor}`);
+
+    // STEP 3a — HARD GATE. If any unresolved blocking flag exists for this video,
+    // halt BEFORE paid generation, set a real blocking status, alert, and stop.
+    // Default is a human decision — no auto-repair-and-proceed (build directive).
+    const blockers = blockingFlags(db, videoId);
+    if (blockers.length) {
+      const lines = blockers.map((b) => `  [${b.category}/${b.resolution}] ${b.flagged_claim}`).join("\n");
+      const reason = `${blockers.length} unresolved QA blocker(s):\n${lines}`;
+      setStatus(db, videoId, "qa_blocked", { reject_reason: reason.slice(0, 1000) });
+      orchestratorAlert(
+        `video ${videoId} (${channel}) BLOCKED at QA gate — ${blockers.length} unresolved flag(s), no paid generation`,
+        reason
+      );
+      log("================ QA GATE: BLOCKED ================");
+      log(`video ${videoId} halted before paid generation. ${blockers.length} blocking flag(s):`);
+      log(lines);
+      log("Resolve in qa_flags (set resolution to 'rewritten'/'confirmed_accurate' or reject), then re-run.");
+      log("=================================================");
+      return;
+    }
+    log("QA gate: clear — no unresolved blocking flags, proceeding to generation");
 
     // STEP 4 — generation (stills, hero, narration). Each agent self-validates with
     // retry-once-then-alert internally (validate.py); a hard failure throws here.
