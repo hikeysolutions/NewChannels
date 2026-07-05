@@ -505,6 +505,8 @@ Telegram's bot API caps file uploads at 50MB. A finished video at any real resol
 
 ## 03. PIPELINE ARCHITECTURE
 
+> **SUPERSEDED for Channel A** (as of 2026-07-05). Channel A no longer runs this synchronous 10-step flow. It is now stills-only (no hero) and split into a two-phase async pipeline (Phase 1 stops at `awaiting_stills`; a separate poller collects/assembles/publishes), with narration reordered before stills. See `docs/STATE-SINCE-v2.7.md` for the authoritative as-built pipeline. Channel B still follows the flow below.
+
 Same agent-hierarchy shape as RHI/Bible Channel, lighter weight — no RunPod, no avatar animation, no Chatterbox GPU dependency.
 
 1. **Script generation** (Claude Code/Groq) — format + entity bank + situation → scene JSON with per-scene timestamps, still vs. hero-shot designation, on-screen text.
@@ -524,6 +526,8 @@ Same agent-hierarchy shape as RHI/Bible Channel, lighter weight — no RunPod, n
 ---
 
 ## 03a. HUMAN-IN-THE-LOOP APPROVAL (TELEGRAM) — FULL MECHANIC
+
+> **PARTIALLY SUPERSEDED for Channel A** (as of 2026-07-05). The approval message is now sent by the Phase 2 poller (`agents/flyt-poller.js` via `agents/lib/publish.js`), not the orchestrator, and Channel A lands at `pending_approval` with `shortCount: 0`. The approve/reject reply-handler that pushes an approved video to YouTube is NOT built yet. See `docs/STATE-SINCE-v2.7.md`.
 
 No video publishes without manual approval. This section previously described the concept only — this is the actual implementation, matching the proven Cloudinary + Telegram pattern already running in Higgsfield, RHI, and Bible Channel.
 
