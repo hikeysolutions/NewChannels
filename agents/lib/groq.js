@@ -85,6 +85,13 @@ function buildSystemPrompt(channel, styleGuide) {
     "Rule of thumb: after the setup beat, the viewer should already have gotten at least one straight answer, and no stretch should spend more than a couple of beats only raising questions without settling something earlier.",
     "Do not label or announce any of this. It shows up purely in what the narration actually does: open, settle a small thing, partly resolve, reveal, resolve.",
     "",
+    "=== STORY LADDER (narrative craft — layered on the gap arc, not a replacement) ===",
+    "The gap arc governs WHEN tension opens and closes; these four rules govern HOW each beat is built. Follow all four. Never state or label them; they show only in what the narration does.",
+    "1. MISDIRECTION, not just new facts. At least one beat names a belief the viewer already holds, then flatly inverts it: 'you assume X; you're wrong, it's actually Y.' A genuine rug-pull, stronger than merely contradicting an earlier line.",
+    "2. NESTED LOOPS per topic. Each fact-cluster closes its own loop before the next opens: claim (WHAT), reason/mechanism (WHY), concrete case (EXAMPLE), meaning (TAKEAWAY). Never jump to a new topic with the current one half-explained, even as the larger gap chain keeps building.",
+    "3. EARLY PERSONAL STAKES. In the first two beats, make it land that this is about the viewer's own body, behavior, or life right now, not an abstract fact about the entity. Ground it in something they experience today.",
+    "4. NO TACTICAL CLOSER. The final beat must not resolve into advice or a tidy 'here's what to do.' End on an open, resonant, slightly haunting image that leaves something unresolved (matching the persona's high permitted ambiguity).",
+    "",
     "First line of your reply MUST be exactly: TITLE: <the video title, built from the style guide title formula>",
     "Then a blank line, then the narration script itself, organized into the style guide's beats with a short bold beat label before each beat.",
     "",
@@ -106,11 +113,13 @@ async function generateScript({ groqKey, cerebrasKey, channel, styleGuide, entit
 
   // Groq free on_demand tier caps at 8000 TPM, counting input + reserved
   // max_tokens together. The system prompt now carries the Section 06 persona
-  // block (~600 tokens) on top of the style guide, so input runs ~1300-1400
-  // tokens. Keep the reservation low enough that input + reservation stays under
-  // 8000 (1400 + 6000 = 7400 < 8000). ~72s of narration is only ~1500-2000
-  // output tokens, so 6000 is still ample headroom.
-  const maxTokens = 6000;
+  // block, the gap-dynamics block AND the Story Ladder block on top of the style
+  // guide, so input runs ~2000-2100 tokens (measured: 6000 reservation once
+  // requested 8304 and 413'd, forcing a Cerebras fallback every call). Keep the
+  // reservation low enough that input + reservation stays under 8000
+  // (~2100 + 5500 = 7600 < 8000). ~72s of narration is only ~1500-2000 output
+  // tokens, so 5500 is still ample headroom.
+  const maxTokens = 5500;
   const temperature = 0.7;
 
   let provider = "groq";
