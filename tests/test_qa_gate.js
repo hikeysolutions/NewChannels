@@ -60,18 +60,45 @@ function main() {
     for (const r of rows) console.log(`  [${r.category}/${r.resolution}] ${r.claim}`);
 
     const blockers = blockingFlags(db, videoId);
-    console.log(`\n=== GATE: ${blockers.length} blocking flag(s) -> ${blockers.length ? "HALT before paid generation" : "clear, would proceed"} ===`);
+    console.log(`\n=== GATE (real script): ${blockers.length} blocking flag(s) -> ${blockers.length ? "HALT before paid generation" : "clear, would proceed"} ===`);
     for (const b of blockers) console.log(`  [${b.category}/${b.resolution}] ${String(b.flagged_claim).slice(0, 90)}`);
+
+    // ---- bad-fixture pass: prove the gate actually BLOCKS a bad video. ----
+    // The real manifest above is a well-arced, passing script (5 scenes, arced gap
+    // chain), so it correctly yields zero blockers and CANNOT exercise the block
+    // path. gap_logic is the one blocking check that is fully deterministic (no
+    // model call): a chain of >= OPENS_RUN_THRESHOLD (7) all-"opens" blocks that
+    // never advances is unambiguous stagnation and MUST land a blocking flag.
+    const badScenes = Array.from({ length: 8 }, (_, i) => ({
+      gap_state: "opens",
+      narration: `Bad block ${i}: a new fact opens and nothing ever resolves.`,
+      render: { subject_type: "character" },
+    }));
+    const badInfo = db
+      .prepare(`INSERT INTO videos (channel, entity, situation, title, status) VALUES (?,?,?,?, 'qa_pending')`)
+      .run(CHANNEL, "stagnation-fixture", "", "STAGNATION FIXTURE (all opens)");
+    const badVideoId = Number(badInfo.lastInsertRowid);
+    const badSummary = runQaPass(db, {
+      videoId: badVideoId, channel: CHANNEL,
+      scriptText: "A deliberately stagnant script that never resolves anything.",
+      scenes: badScenes,
+    });
+    const badBlockers = blockingFlags(db, badVideoId);
+    console.log(`\n=== BAD FIXTURE (video ${badVideoId}): gap_logic=${badSummary.gapLogic}  blockers=${badBlockers.length} ===`);
+    for (const b of badBlockers) console.log(`  [${b.category}/${b.resolution}] ${String(b.flagged_claim).slice(0, 90)}`);
 
     // ---- assertions ----
     const checks = [];
     const voiceTotal = summary.voice && summary.voice.total;
     checks.push(["voice scored numerically 0-10", Number.isFinite(voiceTotal) && voiceTotal >= 0 && voiceTotal <= 10]);
-    checks.push(["gap_logic flagged stagnation (>=1)", summary.gapLogic >= 1]);
     checks.push(["style_minor caught em/en dashes (>=1)", summary.styleMinor >= 1]);
     const transitioned = rows.some((r) => r.resolution !== "pending");
     checks.push(["at least one resolution left 'pending'", transitioned]);
-    checks.push(["gate returns >=1 blocker", blockers.length >= 1]);
+    // Good real script must NOT be blocked (no false-positive gate).
+    checks.push(["real passing script yields 0 blockers", blockers.length === 0]);
+    // Bad fixture must be blocked — this is the whole point of the gate.
+    checks.push(["bad fixture flags gap_logic stagnation (>=1)", badSummary.gapLogic >= 1]);
+    checks.push(["gate blocks the bad fixture (>=1 blocker)", badBlockers.length >= 1]);
 
     console.log("\n=== ASSERTIONS ===");
     let allPass = true;
