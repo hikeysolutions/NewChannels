@@ -391,6 +391,99 @@ function cleanupTmp(paths, videoId) {
   }
 }
 
+// ---- tmp reaper (Section 03 step 10, generalized) --------------------------
+// The publish path (cleanupTmp above) only clears tmp/<slug>/ on a confirmed
+// upload. That leaves two leaks: a video that reaches a terminal-but-unpublished
+// state ('abandoned') is never cleaned, and a tmp dir whose video row is gone
+// (an orphan from an aborted run) is unreachable by any publish-keyed cleanup.
+// This pass runs every invocation and closes both, without ever touching a dir
+// whose slug still has live or deliberately-retained work:
+//   - reap   : EVERY row for the slug is terminal-reapable (published/abandoned)
+//   - keep   : ANY row for the slug is pending_approval / rejected / approved
+//              (in-flight, or intentionally retained per Section 03a) — no exceptions
+//   - orphan : no DB row at all -> reap only if the dir is older than 7 days, so a
+//              run still mid-flight (row not yet written) is never deleted
+const REAP_STATUSES = new Set(["published", "abandoned"]);
+const ORPHAN_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+
+// Map of `${channel}::${slug}` -> every status that slug's video rows carry. A
+// slug can legitimately have several rows (e.g. a long-form re-run), so the reap
+// decision must consider all of them, not just one.
+function slugStatuses(db) {
+  const rows = db.prepare(`SELECT id, channel, manifest_path, status FROM videos`).all();
+  const map = new Map();
+  for (const r of rows) {
+    const slug = path.basename(r.manifest_path || `${r.id}.json`, ".json");
+    const key = `${r.channel}::${slug}`;
+    if (!map.has(key)) map.set(key, []);
+    map.get(key).push(r.status);
+  }
+  return map;
+}
+
+// Scan every channel's tmp/, decide per dir, and (unless DRY_RUN) delete the
+// reapable ones. Returns [{ tmpDir, slug, channel, action, reason }] for logging
+// and testing. Reads only under DRY_RUN — safe to run against a copy DB.
+function reapStaleTmp(db, { now = Date.now() } = {}) {
+  const bySlug = slugStatuses(db);
+  const decisions = [];
+
+  for (const [channel, chDir] of Object.entries(CHANNEL_DIRS)) {
+    const tmpBase = path.join(ROOT, chDir, "tmp");
+    let entries;
+    try {
+      entries = fs.readdirSync(tmpBase, { withFileTypes: true });
+    } catch (e) {
+      continue; // channel has no tmp/ yet — nothing to reap
+    }
+    for (const ent of entries) {
+      if (!ent.isDirectory()) continue; // per-slug working dirs only, never stray files
+      const slug = ent.name;
+      const tmpDir = path.join(tmpBase, slug);
+      const statuses = bySlug.get(`${channel}::${slug}`);
+
+      let action = "keep";
+      let reason;
+      if (statuses && statuses.length) {
+        if (statuses.every((s) => REAP_STATUSES.has(s))) {
+          action = "reap";
+          reason = `row status ${statuses.join("/")} (terminal)`;
+        } else {
+          reason = `protected status ${statuses.join("/")}`;
+        }
+      } else {
+        // orphan: no DB row. Age-gate on the dir's mtime so a run whose row has
+        // not been written yet (mtime recent) is left alone.
+        let ageMs = 0;
+        try {
+          ageMs = now - fs.statSync(tmpDir).mtimeMs;
+        } catch (e) {
+          ageMs = 0;
+        }
+        const ageDays = (ageMs / 86400000).toFixed(1);
+        if (ageMs > ORPHAN_MAX_AGE_MS) {
+          action = "reap";
+          reason = `orphan (no DB row), age ${ageDays}d > 7d`;
+        } else {
+          reason = `orphan (no DB row) but age ${ageDays}d within 7d grace`;
+        }
+      }
+
+      if (action === "reap" && !DRY_RUN) {
+        try {
+          fs.rmSync(tmpDir, { recursive: true, force: true });
+        } catch (e) {
+          action = "error";
+          reason = `reap failed: ${e.message}`;
+        }
+      }
+      decisions.push({ tmpDir, slug, channel, action, reason });
+      log(`${DRY_RUN ? "[dry] " : ""}tmp ${action}: ${chDir}/tmp/${slug} — ${reason}`);
+    }
+  }
+  return decisions;
+}
+
 async function processApprovedUploads(env, db, deps = {}) {
   const rows = db.prepare(`SELECT * FROM videos WHERE status='approved' ORDER BY id ASC`).all();
   if (rows.length === 0) return;
@@ -475,6 +568,10 @@ async function main() {
     // (2) Upload pass: push every 'approved' row to YouTube -> 'published'. Runs
     // every invocation regardless of new replies, so failed uploads retry.
     await processApprovedUploads(env, db);
+
+    // (3) tmp reaper: reclaim tmp/<slug>/ for terminal videos (published/abandoned)
+    // and stale orphans, independent of the publish path. Also runs every pass.
+    reapStaleTmp(db);
     log("pass complete");
   } finally {
     db.close();
@@ -493,5 +590,6 @@ if (require.main === module) {
 module.exports = {
   parseCommand, parseItem, matchRow, resolveBundle, targetsForCommand,
   applyDecision, setStatus, pathsFor, uploadApprovedRow, processApprovedUploads,
+  slugStatuses, reapStaleTmp,
   __setDryRun: (v) => { DRY_RUN = v; },
 };
