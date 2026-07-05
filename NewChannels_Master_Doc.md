@@ -77,6 +77,14 @@ The live-tested "flawless consistency across sequential prompts" result went thr
 - Hero removal (`bb6015a`): Channel A is stills-only, no Seedance video clips. `flyt-hero.py` (Seedance 2.0 on Atlas Cloud) still exists and is real, but applies to Channel B only.
 - Gap-chain stagnation (`95a7c04`, `213c9fb`): the generator was producing all-opens-then-resolves chains, correctly tripping `gap_logic`. Fixed with explicit prose-arc guidance (early partial_resolve) and threshold recalibration to 7.
 - Deterministic visual-prompt repair (`9339900`): `vpcheck.js` detects and regenerates near-duplicate or non-visual prompts, falling back to a QA flag rather than silently shipping.
+- Data visuals (`bbd589b`..`cee7dbd`, 2026-07-05): a new `render.subject_type` value `data_visual` for stylized data/explainer graphics (timeline bar, radius diagram, donut, line graph, icon count) in the SAME flat 2D minimalist style as the character scenes (based on shot-by-shot analysis of the Zenn reference video). A data_visual shot occupies a normal aligned shot window; nothing in `shots.js`/`assemble.py` changed. Mechanics:
+  - Stage 1 (`groq.js`) requires 2-3 short quantitative-anchor sentences per script, never back to back, never on a fixed schedule, restated in the same quantitative form on revisit.
+  - Stage 2 (`qwen.js`) splits an anchor sentence into its own short `data_visual` scene (the JSON shape example carries a data_visual scene because qwen2.5:7b follows examples over prose rules).
+  - Shot pass (`flyt-orchestrator.js` + `generateDataVisualPrompt` in `qwen.js`): fixed layout vocabulary, on-screen label 1-3 words max, and a per-run topic-to-layout grammar registry so a revisited data point reuses the earlier graphic's layout instead of a new chart style.
+  - Color semantics LOCKED (`DATA_VISUAL_STYLE` in `flyt-stills.py`, mirrored in `ChannelA/STYLE_GUIDE.md`): dark baseline for unknown/natural state, neutral light for established fact, ONE accent reserved exclusively for human intervention / change / gained-or-lost.
+  - `vpcheck.js` treats data_visual as its own audit class (no framing check, like-vs-like distinctness, same-topic reuse exempt; non-visual-term and non-English checks still apply).
+  - Advisory `data_visual_pacing` qa_flags category (never gates): adjacency, density above ~1 per 4, and absence on long scripts.
+  - Verified with 4 text-only regen runs (no spend): data scenes at sane non-adjacent positions, labels 1-3 words, layouts in vocabulary, registry + layout reuse proven with real output, zero vpcheck false flags on data shots. Known tendency: qwen tags 1-2 data scenes per script even when the script carries 3 anchors — acceptable, revisit only if real videos feel under-punctuated.
 
 ---
 
