@@ -8,9 +8,12 @@
     <!-- Phase 2 of the Channel A async-stills pipeline: scans awaiting_stills rows,
          collects finished Gemini Batch jobs, assembles + publishes to the Telegram
          approval gate. One pass per launch, then exits (StartInterval re-launches). -->
+    <!-- Must be the nvm node v22.22.0 that this repo's native better-sqlite3 was
+         compiled against (NODE_MODULE_VERSION 127); the Homebrew node has a newer
+         ABI and fails to load the module. -->
     <key>ProgramArguments</key>
     <array>
-      <string>/opt/homebrew/bin/node</string>
+      <string>/Users/clawbot/.nvm/versions/node/v22.22.0/bin/node</string>
       <string>/Users/clawbot/OpenClaw/NewChannels/agents/flyt-poller.js</string>
     </array>
 
