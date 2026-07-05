@@ -21,9 +21,10 @@
 //   task): the two live tests — an actual upload, and YouTube honoring
 //   status.containsSyntheticMedia. The uploader is fully unit-tested against a
 //   mocked HTTP layer; nothing auto-uploads until credentials exist.
-// The bundled multi-shorts grammar (approve short_n, per-item reject) is a later
-// step; this parser handles the long-form approve/reject case and treats anything
-// it does not understand as a no-op with a help reply.
+//   Bundled grammar: a reply of "approve all|long|short_n" or "reject [item]
+//     [reason]" is resolved against the matched bundle (the long-form parent plus
+//     its short children). A short_n that isn't in the bundle is a clean no-op
+//     with an explanatory reply; already-handled items are skipped silently.
 //
 // One pass per invocation, then exit (the LaunchAgent re-launches on StartInterval),
 // matching flyt-poller.js. getUpdates offset is persisted between runs so a reply
@@ -141,23 +142,100 @@ function setStatus(db, videoId, status, extra = {}) {
 }
 
 // ---- command parsing ----
-// STEP 2: long-form approve/reject only. Returns { action, reason } or null.
-// The bundled grammar (approve all|long|short_n, per-item reject) arrives in a
-// later step; unrecognized text yields null and a help reply, never a wrong write.
+// Bundled grammar (Section 03a v2.7, matching the caption in publish.js):
+//   approve all | approve long | approve short_[n]
+//   reject [item] [reason]   where item is all | long | short_[n] (optional)
+// Returns { action, scope, index, reason } or null. `scope` is 'all' | 'long' |
+// 'short'; `index` is the 1-based short number when scope is 'short', else null.
+// Bare "approve"/"reject" default to scope 'all' (whole bundle). Unrecognized text
+// yields null and a help reply, never a wrong write.
+
+// Parse the item portion after the leading verb into { scope, index }, or null if
+// it names no recognized item. An empty item means the whole bundle (scope 'all').
+function parseItem(itemToken) {
+  if (!itemToken) return { scope: "all", index: null };
+  const t = itemToken.toLowerCase();
+  if (t === "all") return { scope: "all", index: null };
+  if (t === "long") return { scope: "long", index: null };
+  // short_[n] or short[n] or "short n" already collapsed to a single token upstream.
+  const m = t.match(/^short[_\s]?(\d+)$/);
+  if (m) {
+    const index = parseInt(m[1], 10);
+    if (index >= 1) return { scope: "short", index };
+  }
+  return null;
+}
+
 function parseCommand(text) {
   if (!text) return null;
   const trimmed = text.trim();
-  const lower = trimmed.toLowerCase();
+  const tokens = trimmed.split(/\s+/);
+  const verb = tokens[0].toLowerCase();
 
-  if (lower === "approve" || lower.startsWith("approve ") || lower === "approve all" || lower === "approve long") {
-    return { action: "approve" };
+  if (verb === "approve") {
+    // approve | approve all | approve long | approve short_[n]. Anything else is
+    // not understood — return null rather than guessing an approval.
+    const item = parseItem(tokens[1]);
+    if (!item || tokens.length > 2) return null;
+    return { action: "approve", scope: item.scope, index: item.index };
   }
-  if (lower === "reject" || lower.startsWith("reject ")) {
-    // Everything after the leading "reject" token is the reason (may be empty).
-    const reason = trimmed.slice("reject".length).trim();
-    return { action: "reject", reason: reason || "(no reason given)" };
+
+  if (verb === "reject") {
+    // reject [item] [reason]. If the first token after "reject" names an item,
+    // consume it and treat the rest as the reason; otherwise the whole remainder
+    // is the reason and the scope defaults to the whole bundle ('all').
+    const rest = tokens.slice(1);
+    let scope = "all";
+    let index = null;
+    let reasonTokens = rest;
+    if (rest.length > 0) {
+      const item = parseItem(rest[0]);
+      if (item) {
+        scope = item.scope;
+        index = item.index;
+        reasonTokens = rest.slice(1);
+      }
+    }
+    const reason = reasonTokens.join(" ").trim();
+    return { action: "reject", scope, index, reason: reason || "(no reason given)" };
   }
+
   return null;
+}
+
+// ---- bundle resolution ----
+// A matched anchor row is the long-form parent (it carries the tg_message_id of
+// the bundled message). Resolve the full bundle it belongs to: the long-form row
+// plus every short cut from it, ordered by id (short_1 is the earliest child).
+// Works even if the anchor is itself a short (defensive): walk up to the parent.
+function resolveBundle(db, row) {
+  // Always re-read the long-form row fresh so its status reflects any decisions
+  // already applied this pass (the caller may hold a stale copy).
+  const longId = row.parent_video_id || row.id;
+  const longRow = db.prepare(`SELECT * FROM videos WHERE id = ?`).get(longId) || row;
+  const shorts = db
+    .prepare(`SELECT * FROM videos WHERE parent_video_id = ? AND video_type = 'short' ORDER BY id ASC`)
+    .all(longRow.id);
+  return { long: longRow, shorts };
+}
+
+// Given a parsed command + resolved bundle, return the list of rows the decision
+// applies to, or an { error } when the command names something that isn't there
+// (e.g. approve short_5 when the bundle has 2 shorts). Never guesses.
+function targetsForCommand(cmd, bundle) {
+  if (cmd.scope === "long") return { rows: [bundle.long] };
+  if (cmd.scope === "all") return { rows: [bundle.long, ...bundle.shorts] };
+  if (cmd.scope === "short") {
+    const target = bundle.shorts[cmd.index - 1];
+    if (!target) {
+      const have = bundle.shorts.length;
+      return { error: have === 0
+        ? "this bundle has no shorts"
+        : `no short_${cmd.index} in this bundle (it has ${have})` };
+    }
+    return { rows: [target] };
+  }
+  return { error: `unrecognized scope "${cmd.scope}"` };
 }
 
 // ---- reply -> videos row matching ----
@@ -202,22 +280,55 @@ async function replyTo(env, msg, text) {
   }
 }
 
-// ---- act on one parsed command against one matched row ----
+// ---- act on one parsed command against the matched bundle ----
+// The command's scope (all|long|short_n) selects which rows in the bundle to act
+// on. A short_n that doesn't exist is a clean no-op with an explanatory reply.
 async function applyDecision(env, db, row, cmd, msg) {
-  if (cmd.action === "approve") {
-    // STEP 2: land at 'approved' and stop. YouTube upload is a later step.
-    setStatus(db, row.id, "approved", { approved_at: new Date().toISOString() });
-    log(`video ${row.id} "${row.title}" approved by human (upload deferred to step 3)`);
-    await replyTo(env, msg, `Approved: "${row.title}". Queued for upload.`);
+  const bundle = resolveBundle(db, row);
+  const { rows, error } = targetsForCommand(cmd, bundle);
+  if (error) {
+    log(`cannot ${cmd.action} ${describeScope(cmd)}: ${error}`);
+    await replyTo(env, msg, `Could not act on that: ${error}.`);
     return;
   }
+
+  // Only act on rows still awaiting approval; a bundle can be partially handled
+  // already (e.g. one short rejected earlier). Silently skip the rest.
+  const actionable = rows.filter((r) => r.status === "pending_approval");
+  if (actionable.length === 0) {
+    log(`${describeScope(cmd)}: nothing left awaiting approval`);
+    await replyTo(env, msg, `Nothing to ${cmd.action} there — already handled.`);
+    return;
+  }
+
+  if (cmd.action === "approve") {
+    for (const r of actionable) {
+      setStatus(db, r.id, "approved", { approved_at: new Date().toISOString() });
+      log(`video ${r.id} "${r.title}" approved by human`);
+    }
+    const titles = actionable.map((r) => `"${r.title}"`).join(", ");
+    await replyTo(env, msg, `Approved ${describeScope(cmd)}: ${titles}. Queued for upload.`);
+    return;
+  }
+
   if (cmd.action === "reject") {
     // tmp/ assets are intentionally NOT cleaned up on reject (Section 03a).
-    setStatus(db, row.id, "rejected", { reject_reason: cmd.reason });
-    log(`video ${row.id} "${row.title}" rejected: ${cmd.reason}`);
-    await replyTo(env, msg, `Rejected: "${row.title}". Reason: ${cmd.reason}. Assets kept.`);
+    for (const r of actionable) {
+      setStatus(db, r.id, "rejected", { reject_reason: cmd.reason });
+      log(`video ${r.id} "${r.title}" rejected: ${cmd.reason}`);
+    }
+    const titles = actionable.map((r) => `"${r.title}"`).join(", ");
+    await replyTo(env, msg, `Rejected ${describeScope(cmd)}: ${titles}. Reason: ${cmd.reason}. Assets kept.`);
     return;
   }
+}
+
+// Human-readable name for a command's scope, for logs and replies.
+function describeScope(cmd) {
+  if (cmd.scope === "long") return "the long-form";
+  if (cmd.scope === "all") return "the whole bundle";
+  if (cmd.scope === "short") return `short_${cmd.index}`;
+  return cmd.scope;
 }
 
 // ---- upload pass: drive every 'approved' row to 'published' (Section 03 step 9) ----
@@ -380,7 +491,7 @@ if (require.main === module) {
 }
 
 module.exports = {
-  parseCommand, matchRow, applyDecision, setStatus, pathsFor,
-  uploadApprovedRow, processApprovedUploads,
+  parseCommand, parseItem, matchRow, resolveBundle, targetsForCommand,
+  applyDecision, setStatus, pathsFor, uploadApprovedRow, processApprovedUploads,
   __setDryRun: (v) => { DRY_RUN = v; },
 };
