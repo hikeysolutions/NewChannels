@@ -18,6 +18,9 @@ outputs/
 *.db-wal
 *.db-shm
 
+# Approval-reply-handler runtime state (Telegram getUpdates offset)
+db/approvals_offset.json
+
 # Secrets
 .env
 .env*
