@@ -9,14 +9,11 @@
 // Stage 2 (scene JSON) stays on local qwen2.5:7b - see qwen.js.
 
 const { personaFor } = require("./personas");
+const { resolveChain } = require("./llm_registry");
 
-// Recommended replacement for the deprecated llama-3.3-70b-versatile (Groq
-// decommission 2026-08-16). Matches the creative tier already in use elsewhere.
-const GROQ_MODEL = "openai/gpt-oss-120b";
-const CEREBRAS_MODEL = "gpt-oss-120b";
-
-const GROQ_URL = "https://api.groq.com/openai/v1/chat/completions";
-const CEREBRAS_URL = "https://api.cerebras.ai/v1/chat/completions";
+// Provider endpoints, models, auth vars, and the fallback ORDER now live in
+// config/llm-models.json + ChannelX/config.json, resolved by llm_registry.js.
+// Adding, removing, or reordering providers is a config edit, not a change here.
 
 // One OpenAI-compatible chat call. Returns the content string, or null on any
 // failure so the caller can fall through to the next provider.
@@ -109,9 +106,21 @@ function buildSystemPrompt(channel, styleGuide) {
   ].join("\n");
 }
 
-// Generate the prose script: Groq first, Cerebras on failure. Throws only if
-// both providers fail. Returns { title, scriptText, provider, raw }.
-async function generateScript({ groqKey, cerebrasKey, channel, styleGuide, entity, situation }) {
+// Generate the prose script by walking the channel's resolved provider chain
+// (config/llm-models.json order, Groq then Cerebras by default). Each provider's
+// endpoint, model, max_tokens, temperature, and auth come from the registry; the
+// first one that returns content wins. Throws only if every provider fails.
+// Returns { title, scriptText, provider, raw }.
+//
+// max_tokens note (lives on the Groq registry entry): the free on_demand tier
+// caps at 8000 TPM counting input + reserved max_tokens together. The system
+// prompt (persona + gap-dynamics + Story Ladder + quantitative-anchor blocks +
+// style guide) runs ~2700 tokens; a 5500 reservation once requested 8197 and
+// 413'd every call. 4800 keeps input + reservation under 8000 (~7500) with ample
+// output headroom (~72s narration is ~1500-2000 tokens). A 413 fails SOFT (falls
+// through to the next provider), so watch the [warn] 413 line after any
+// prompt/style-guide edit and re-measure if it grows.
+async function generateScript({ env, channel, styleGuide, entity, situation }) {
   const systemPrompt = buildSystemPrompt(channel, styleGuide);
   const userPrompt = [
     `Entity: ${entity}`,
@@ -120,31 +129,32 @@ async function generateScript({ groqKey, cerebrasKey, channel, styleGuide, entit
     "Write the script for this exact entity and situation now.",
   ].join("\n");
 
-  // Groq free on_demand tier caps at 8000 TPM, counting input + reserved
-  // max_tokens together. The system prompt now carries the Section 06 persona
-  // block, the gap-dynamics block AND the Story Ladder block on top of the style
-  // guide, plus the quantitative-anchor block and the style guide's data-visual
-  // section, so input runs ~2700 tokens (measured live 2026-07-05: 5500
-  // reservation requested 8197 and 413'd on every call, forcing a permanent
-  // Cerebras fallback). Keep the reservation low enough that input + reservation
-  // stays under 8000 (~2700 + 4800 = 7500 < 8000). ~72s of narration is only
-  // ~1500-2000 output tokens, so 4800 is still ample headroom. If the system
-  // prompt grows again, re-measure: a 413 here fails SOFT (silent fallback), so
-  // watch for the [warn] 413 line after any prompt/style-guide edit.
-  const maxTokens = 4800;
-  const temperature = 0.7;
+  const chain = resolveChain(channel, env || {});
+  if (!chain.length) throw new Error(`no llm providers configured for channel '${channel}'`);
 
-  let provider = "groq";
-  let raw = await callChat(GROQ_URL, groqKey, GROQ_MODEL, systemPrompt, userPrompt, maxTokens, temperature);
-
-  if (raw === null) {
-    process.stderr.write("[warn] Groq failed, falling back to Cerebras\n");
-    provider = "cerebras";
-    raw = await callChat(CEREBRAS_URL, cerebrasKey, CEREBRAS_MODEL, systemPrompt, userPrompt, maxTokens, temperature);
+  let provider = null;
+  let raw = null;
+  let attempted = false;
+  for (const p of chain) {
+    if (!p.apiKey) continue; // unconfigured provider — skip to the next
+    if (attempted) process.stderr.write(`[warn] falling back to ${p.id}\n`);
+    attempted = true;
+    provider = p.id;
+    raw = await callChat(
+      p.endpoint,
+      p.apiKey,
+      p.model,
+      systemPrompt,
+      userPrompt,
+      p.max_tokens,
+      p.temperature,
+    );
+    if (raw !== null) break;
   }
 
   if (raw === null) {
-    throw new Error("both Groq and Cerebras failed (check GROQ_API_KEY / CEREBRAS_API_KEY in ~/.openclaw/.env)");
+    const names = chain.map((p) => p.id).join(" / ");
+    throw new Error(`all script providers failed (${names}) — check auth keys in ~/.openclaw/.env`);
   }
 
   const match = raw.match(/^TITLE:\s*(.+)$/m);
@@ -155,4 +165,4 @@ async function generateScript({ groqKey, cerebrasKey, channel, styleGuide, entit
   return { title, scriptText, provider, raw };
 }
 
-module.exports = { generateScript, GROQ_MODEL, CEREBRAS_MODEL };
+module.exports = { generateScript };

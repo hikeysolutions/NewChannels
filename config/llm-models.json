@@ -1,0 +1,22 @@
+{
+  "groq": {
+    "adapter": "openai_chat",
+    "display_name": "Groq (gpt-oss-120b)",
+    "model": "openai/gpt-oss-120b",
+    "endpoint": "https://api.groq.com/openai/v1/chat/completions",
+    "auth_env": ["NEWCHANNELS_GROQ_API_KEY", "GROQ_API_KEY"],
+    "max_tokens": 4800,
+    "temperature": 0.7,
+    "quirks": "Free on_demand tier caps at 8000 TPM counting input + reserved max_tokens together. Keep input + max_tokens under 8000 or the call 413s and falls through. Replaced deprecated llama-3.3-70b-versatile (Groq decommission 2026-08-16)."
+  },
+  "cerebras": {
+    "adapter": "openai_chat",
+    "display_name": "Cerebras (gpt-oss-120b)",
+    "model": "gpt-oss-120b",
+    "endpoint": "https://api.cerebras.ai/v1/chat/completions",
+    "auth_env": ["CEREBRAS_API_KEY"],
+    "max_tokens": 4800,
+    "temperature": 0.7,
+    "quirks": "Standing cross-business fallback for the creative tier. No 8000 TPM ceiling, so it absorbs the Groq 413 case."
+  }
+}

@@ -87,8 +87,7 @@ async function main() {
 
     process.stdout.write("[info] stage 1: Groq (Cerebras fallback) writing prose script...\n");
     const { title, scriptText, provider } = await generateScript({
-      groqKey: env.NEWCHANNELS_GROQ_API_KEY || env.GROQ_API_KEY,
-      cerebrasKey: env.CEREBRAS_API_KEY,
+      env,
       channel: args.channel,
       styleGuide,
       entity: combo.entity,
