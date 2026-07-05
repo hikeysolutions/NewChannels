@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+  <dict>
+    <key>Label</key>
+    <string>com.openclaw.flyt-poller</string>
+
+    <!-- Phase 2 of the Channel A async-stills pipeline: scans awaiting_stills rows,
+         collects finished Gemini Batch jobs, assembles + publishes to the Telegram
+         approval gate. One pass per launch, then exits (StartInterval re-launches). -->
+    <key>ProgramArguments</key>
+    <array>
+      <string>/opt/homebrew/bin/node</string>
+      <string>/Users/clawbot/OpenClaw/NewChannels/agents/flyt-poller.js</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/clawbot/OpenClaw/NewChannels</string>
+
+    <!-- 15 minutes: Gemini Batch turns around in up to ~24h, so there is no value
+         in polling more aggressively than this. -->
+    <key>StartInterval</key>
+    <integer>900</integer>
+
+    <key>RunAtLoad</key>
+    <false/>
+
+    <!-- Ships DISABLED. Enable only after the stub test + first live end-to-end run
+         pass: set Disabled=false (or `launchctl load -w`) once ready to go live. -->
+    <key>Disabled</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>/Users/clawbot/OpenClaw/Logs/flyt-poller.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/clawbot/OpenClaw/Logs/flyt-poller.err.log</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+      <key>HOME</key>
+      <string>/Users/clawbot</string>
+      <key>PATH</key>
+      <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/Users/clawbot/.nvm/versions/node/v22.22.0/bin</string>
+    </dict>
+  </dict>
+</plist>
