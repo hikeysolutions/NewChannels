@@ -25,8 +25,10 @@ Usage:
 
 import argparse
 import base64
+import concurrent.futures
 import json
 import os
+import random
 import sys
 import time
 import urllib.error
@@ -340,6 +342,72 @@ def run_sync_submit(args, adapter):
     return 0
 
 
+# Sync-collect concurrency + retry tuning. A sync provider (Atlas) generates
+# every shot at collect; sequential would be ~160-190 serial calls for a full
+# video (10+ min) and risks the poller overlapping itself. Instead a bounded
+# thread pool fires N generations at once (blocking urllib releases the GIL on
+# socket I/O, so threads give real parallelism). Each shot retries in isolation
+# with exponential backoff on 429, so one rate-limited or failed shot never stalls
+# or fails the whole batch. Tune the pool with NEWCHANNELS_SYNC_CONCURRENCY.
+_SYNC_CONCURRENCY_DEFAULT = 6
+_SYNC_MAX_ATTEMPTS = 4
+_BACKOFF_BASE_S = 2.0
+_BACKOFF_CAP_S = 30.0
+_BACKOFF_JITTER_S = 1.0
+
+
+def _sync_concurrency():
+    raw = os.environ.get("NEWCHANNELS_SYNC_CONCURRENCY")
+    if raw:
+        try:
+            n = int(raw)
+            if n >= 1:
+                return n
+        except ValueError:
+            pass
+    return _SYNC_CONCURRENCY_DEFAULT
+
+
+def _generate_shot_sync(adapter, shot, *, channel, style, request_aspect, eff_aspect, out_dir):
+    """Worker: generate + validate ONE shot, isolated. Retries with exponential
+    backoff on 429 (and a flat backoff on other transient errors), up to
+    _SYNC_MAX_ATTEMPTS. Returns (asset_dict, None) on success or
+    (None, (shot_index, error)) if every attempt failed. Runs inside the pool and
+    touches no shared state (build_prompt + adapter calls are stateless)."""
+    idx = shot["shot_index"]
+    prompt = build_prompt(shot, channel, style)
+    jpg_path = os.path.join(out_dir, f"shot_{idx:03d}.jpg")
+    last_err = None
+    for attempt in range(1, _SYNC_MAX_ATTEMPTS + 1):
+        try:
+            img = adapter.generate_still(prompt, request_aspect)
+            with open(jpg_path, "wb") as fh:
+                fh.write(img)
+            report = validate.check_still(jpg_path, expected_aspect=eff_aspect)
+            dims = next((c.metrics for c in report.checks if c.name == "aspect"), {})
+            return ({"shot_index": idx, "jpg": os.path.relpath(jpg_path, ROOT),
+                     "width": dims.get("width"), "height": dims.get("height"),
+                     "aspect": request_aspect, "valid": report.ok,
+                     "visual_prompt": shot["visual_prompt"]}, None)
+        except image_providers.ImageProviderHTTPError as exc:
+            last_err = exc
+            if attempt < _SYNC_MAX_ATTEMPTS:
+                if exc.status == 429:
+                    delay = min(_BACKOFF_BASE_S * (2 ** (attempt - 1)), _BACKOFF_CAP_S)
+                else:
+                    delay = _BACKOFF_BASE_S
+                delay += random.uniform(0, _BACKOFF_JITTER_S)
+                info(f"  shot {idx:03d}: HTTP {exc.status} (attempt {attempt}/{_SYNC_MAX_ATTEMPTS}), backing off {delay:.1f}s")
+                time.sleep(delay)
+        except Exception as exc:  # noqa: BLE001 - isolate: a bad shot must not kill the pool
+            last_err = exc
+            if attempt < _SYNC_MAX_ATTEMPTS:
+                delay = _BACKOFF_BASE_S + random.uniform(0, _BACKOFF_JITTER_S)
+                info(f"  shot {idx:03d}: {type(exc).__name__} (attempt {attempt}/{_SYNC_MAX_ATTEMPTS}), retrying in {delay:.1f}s")
+                time.sleep(delay)
+    return (None, (idx, last_err))
+
+
 def run_sync_collect(args, adapter):
     if not args.job:
         raise ValueError("--batch-collect requires --job <sync:...>")
@@ -349,30 +417,34 @@ def run_sync_collect(args, adapter):
     # Validate against what this provider actually delivers, not the nominal
     # request (Atlas has no true 16:9; it returns its mapped fixed size).
     eff_aspect = adapter.effective_aspect(args.aspect)
+    concurrency = _sync_concurrency()
     info(f"sync collect: provider {adapter.model_id} has no batch API — generating "
-         f"{len(shots)} shots synchronously (effective aspect {eff_aspect})")
+         f"{len(shots)} shots concurrently (pool={concurrency}, effective aspect {eff_aspect})")
 
     channel_dir = os.path.join(ROOT, CHANNEL_DIRS[args.channel])
     out_dir = os.path.join(channel_dir, "tmp", slug)
     os.makedirs(out_dir, exist_ok=True)
     sidecar_path = os.path.join(channel_dir, "manifests", f"{slug}.stills.json")
 
-    assets = []
-    for s in shots:
-        idx = s["shot_index"]
-        jpg_path = os.path.join(out_dir, f"shot_{idx:03d}.jpg")
-        t0 = time.time()
-        # render_scene_still owns the retry-once-then-alert discipline + validation;
-        # build_prompt applies CHANNEL_STYLE/DATA_VISUAL_STYLE exactly as the batch
-        # path does. Shots carry visual_prompt + inherited render, same as batch.
-        report = render_scene_still(s, jpg_path, channel=args.channel, aspect=eff_aspect,
-                                    adapter=adapter, style=args.style)
-        dims = next((c.metrics for c in report.checks if c.name == "aspect"), {})
-        w, h = dims.get("width"), dims.get("height")
-        info(f"  shot {idx:03d}: {w}x{h} in {time.time() - t0:.1f}s valid={report.ok}")
-        assets.append({"shot_index": idx, "jpg": os.path.relpath(jpg_path, ROOT),
-                       "width": w, "height": h, "aspect": args.aspect,
-                       "valid": report.ok, "visual_prompt": s["visual_prompt"]})
+    assets, failures = [], []
+    t0 = time.time()
+    with concurrent.futures.ThreadPoolExecutor(max_workers=concurrency) as pool:
+        futures = [pool.submit(_generate_shot_sync, adapter, s, channel=args.channel,
+                               style=args.style, request_aspect=args.aspect,
+                               eff_aspect=eff_aspect, out_dir=out_dir)
+                   for s in shots]
+        for fut in concurrent.futures.as_completed(futures):
+            asset, err = fut.result()
+            if asset is not None:
+                assets.append(asset)
+                info(f"  shot {asset['shot_index']:03d}: {asset['width']}x{asset['height']} valid={asset['valid']}")
+            else:
+                idx, exc = err
+                failures.append(idx)
+                info(f"  shot {idx:03d}: FAILED after {_SYNC_MAX_ATTEMPTS} attempts: {exc}")
+
+    assets.sort(key=lambda a: a["shot_index"])
+    elapsed = time.time() - t0
 
     sidecar = {"channel": args.channel, "title": data.get("title"), "slug": slug,
                "source_shots": os.path.relpath(args.shots if os.path.isabs(args.shots)
@@ -381,8 +453,12 @@ def run_sync_collect(args, adapter):
     with open(sidecar_path, "w", encoding="utf-8") as fh:
         json.dump(sidecar, fh, indent=2)
         fh.write("\n")
-    info(f"[done] generated {len(assets)}/{len(shots)} shots synchronously "
-         f"-> {os.path.relpath(sidecar_path, ROOT)}")
+    info(f"[done] generated {len(assets)}/{len(shots)} shots in {elapsed:.1f}s "
+         f"(pool={concurrency}) -> {os.path.relpath(sidecar_path, ROOT)}")
+    if failures:
+        alert.send(f"🚨 New Channels pipeline: sync collect {slug} — "
+                   f"{len(failures)} shot(s) failed after {_SYNC_MAX_ATTEMPTS} attempts: {sorted(failures)}")
+        raise RuntimeError(f"sync collect incomplete: {len(failures)} shot(s) failed: {sorted(failures)}")
     return 0
 
 

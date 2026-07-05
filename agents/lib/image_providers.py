@@ -26,6 +26,16 @@ CHANNEL_DIRS = {"channel_a": "ChannelA", "channel_b": "ChannelB"}
 DEFAULT_IMAGE_MODEL = "gemini-nb2-batch"
 
 
+class ImageProviderHTTPError(RuntimeError):
+    """An HTTP error from a provider, carrying the status code so callers can
+    treat rate limits (429) differently (e.g. exponential backoff). Subclasses
+    RuntimeError, so existing `except RuntimeError` handlers still catch it."""
+
+    def __init__(self, status, detail=""):
+        super().__init__(f"HTTP {status}: {detail}")
+        self.status = status
+
+
 def _load_registry():
     with open(REGISTRY_PATH, "r", encoding="utf-8") as fh:
         return json.load(fh)
@@ -309,7 +319,8 @@ class AtlasGenerateAdapter(ImageAdapter):
                 return json.loads(resp.read())
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode("utf-8", errors="replace")[:500]
-            raise RuntimeError(f"Atlas API HTTP {exc.code}: {detail}")  # key is not echoed
+            # status-bearing so a worker pool can back off on 429; key not echoed
+            raise ImageProviderHTTPError(exc.code, f"Atlas: {detail}")
         except urllib.error.URLError as exc:
             raise RuntimeError(f"Atlas API unreachable: {exc.reason}")
 
