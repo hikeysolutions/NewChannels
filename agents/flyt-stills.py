@@ -349,7 +349,7 @@ def run_sync_submit(args, adapter):
 # socket I/O, so threads give real parallelism). Each shot retries in isolation
 # with exponential backoff on 429, so one rate-limited or failed shot never stalls
 # or fails the whole batch. Tune the pool with NEWCHANNELS_SYNC_CONCURRENCY.
-_SYNC_CONCURRENCY_DEFAULT = 6
+_SYNC_CONCURRENCY_DEFAULT = 8
 _SYNC_MAX_ATTEMPTS = 4
 _BACKOFF_BASE_S = 2.0
 _BACKOFF_CAP_S = 30.0
