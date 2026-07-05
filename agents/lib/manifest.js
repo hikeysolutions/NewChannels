@@ -38,6 +38,7 @@ const SUBJECT_TYPES = [
   "landscape",
   "structure",
   "abstract",
+  "data_visual", // stylized data/explainer graphic (timeline bar, radius diagram, donut, line graph) in the channel's flat 2D style
 ];
 const STYLE_DEFAULT = "channel_default";
 
