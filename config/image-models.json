@@ -19,9 +19,33 @@
     "output": { "kind": "inline_base64", "mime": "image/jpeg" },
     "quirks": "JPEG out; sync uses ?key= query param, batch uses x-goog-api-key header; aspect via generationConfig.imageConfig.aspectRatio; inline-request batch; 50% cost vs sync"
   },
+  "gpt-image-2-atlas": {
+    "adapter": "atlas_generate",
+    "display_name": "GPT Image 2 (Atlas Cloud, low tier)",
+    "model": "openai/gpt-image-2/text-to-image",
+    "auth_env": ["ATLASCLOUD_API_KEY"],
+    "mode": "async_poll",
+    "supports_batch": false,
+    "quality": "low",
+    "cost_per_image_usd": 0.008,
+    "size_by_aspect": {
+      "16:9": "1536x1024",
+      "3:2": "1536x1024",
+      "2:3": "1024x1536",
+      "9:16": "1024x1536",
+      "1:1": "1024x1024"
+    },
+    "default_size": "1536x1024",
+    "endpoints": {
+      "generate": "https://api.atlascloud.ai/api/v1/model/generateImage",
+      "prediction": "https://api.atlascloud.ai/api/v1/model/prediction/{id}"
+    },
+    "output": { "kind": "url", "mime": "image/png" },
+    "quirks": "Atlas Cloud standard route, distinct from the openai-direct gpt-image-2 stub. Async: POST generateImage returns a polling handle, then GET prediction/{id} until status=completed, image delivered as a URL in outputs[0] (PNG) which the adapter downloads. quality low|medium|high (flat-priced, ~$0.008/image). No true 16:9; landscape maxes at 1536x1024 (3:2), which assemble.py crop-fills to 1920x1080. Bearer auth. supports_batch false, so the Gemini batch path never reaches it; use the sync per-scene path."
+  },
   "gpt-image-2": {
     "adapter": "openai_images",
-    "display_name": "GPT Image 2 (OpenAI, future stub)",
+    "display_name": "GPT Image 2 (OpenAI-direct, future stub)",
     "model": "gpt-image-2",
     "auth_env": ["OPENAI_API_KEY"],
     "mode": "sync",

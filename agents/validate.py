@@ -114,7 +114,11 @@ def _frame_luma(path: str, at_seconds: float) -> Optional[float]:
         )
         if proc.returncode != 0:
             return None
-        with open(meta_path, "r", encoding="utf-8") as fh:
+        # errors="replace": ffmpeg's metadata=print dumps the frame's embedded
+        # metadata too, which for some providers (e.g. GPT Image 2 PNGs carrying
+        # C2PA content credentials) contains non-UTF8 bytes. We only need the
+        # ASCII lavfi.signalstats.YAVG line, so tolerate undecodable bytes.
+        with open(meta_path, "r", encoding="utf-8", errors="replace") as fh:
             m = YAVG_RE.search(fh.read())
         return float(m.group(1)) if m else None
     finally:

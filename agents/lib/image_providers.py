@@ -15,6 +15,7 @@ behavior exactly.
 import base64
 import json
 import os
+import time
 import urllib.error
 import urllib.request
 
@@ -256,7 +257,106 @@ class OpenAIImagesAdapter(ImageAdapter):
         raise NotImplementedError("OpenAIImagesAdapter.generate_still is a stub, not wired yet")
 
 
+class AtlasGenerateAdapter(ImageAdapter):
+    """GPT Image 2 via Atlas Cloud's standard route (openai/gpt-image-2/text-to-image).
+    Async generateImage-then-poll: POST /generateImage returns a polling handle,
+    GET /prediction/{id} until status=completed, image is a URL in outputs[0]
+    (PNG) which we download. Distinct route from the openai-direct stub; verified
+    against the live API 2026-07-05. supports_batch is false, so only the sync
+    per-scene path uses it."""
+
+    POLL_INTERVAL_S = 3
+    POLL_TIMEOUT_S = 180
+    # Atlas sits behind Cloudflare, which bans urllib's default User-Agent
+    # (403 error 1010). A normal UA clears the edge WAF.
+    USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) NewChannels-flyt/1.0"
+
+    @property
+    def quality(self):
+        return self.spec.get("quality", "low")
+
+    def _size_for(self, aspect):
+        by = self.spec.get("size_by_aspect") or {}
+        return by.get(aspect, self.spec.get("default_size", "1024x1024"))
+
+    def _headers(self):
+        return {
+            "Authorization": f"Bearer {self.api_key()}",
+            "Content-Type": "application/json",
+            "User-Agent": self.USER_AGENT,
+        }
+
+    def _http(self, method, url, body=None, timeout=60):
+        data = json.dumps(body).encode("utf-8") if body is not None else None
+        req = urllib.request.Request(url, data=data, method=method, headers=self._headers())
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                return json.loads(resp.read())
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", errors="replace")[:500]
+            raise RuntimeError(f"Atlas API HTTP {exc.code}: {detail}")  # key is not echoed
+        except urllib.error.URLError as exc:
+            raise RuntimeError(f"Atlas API unreachable: {exc.reason}")
+
+    @staticmethod
+    def _dig(payload, *keys):
+        """Pull the first present key from payload or a nested 'data' object,
+        so we tolerate either {k:..} or {data:{k:..}} response nesting."""
+        for src in (payload, payload.get("data") if isinstance(payload.get("data"), dict) else None):
+            if not isinstance(src, dict):
+                continue
+            for k in keys:
+                if src.get(k) not in (None, ""):
+                    return src[k]
+        return None
+
+    def _poll_url(self, submit_resp):
+        """The polling target: an explicit URL if the submit response gives one,
+        else built from a returned id + the prediction endpoint template."""
+        urls = self._dig(submit_resp, "urls")
+        if isinstance(urls, dict) and urls.get("get"):
+            return urls["get"]
+        pid = self._dig(submit_resp, "id", "request_id", "prediction_id")
+        if not pid:
+            raise RuntimeError(f"Atlas submit returned no id/polling url: {json.dumps(submit_resp)[:300]}")
+        return self._endpoint("prediction", id=pid)
+
+    def _download(self, url):
+        req = urllib.request.Request(url, method="GET", headers={"User-Agent": self.USER_AGENT})
+        try:
+            with urllib.request.urlopen(req, timeout=120) as resp:
+                return resp.read()
+        except urllib.error.URLError as exc:
+            raise RuntimeError(f"Atlas image download failed: {exc}")
+
+    def generate_still(self, prompt, aspect):
+        body = {
+            "model": self.model_name,
+            "prompt": prompt,
+            "size": self._size_for(aspect),
+            "quality": self.quality,
+        }
+        submit = self._http("POST", self._endpoint("generate"), body)
+        poll_url = self._poll_url(submit)
+
+        deadline = time.time() + self.POLL_TIMEOUT_S
+        while True:
+            op = self._http("GET", poll_url)
+            status = self._dig(op, "status")
+            if status == "completed":
+                outputs = self._dig(op, "outputs", "output") or []
+                if not outputs:
+                    raise RuntimeError(f"Atlas completed with no outputs: {json.dumps(op)[:300]}")
+                return self._download(outputs[0])
+            if status == "failed":
+                raise RuntimeError(f"Atlas prediction failed: {json.dumps(op)[:300]}")
+            if time.time() > deadline:
+                raise RuntimeError(f"Atlas prediction timed out after {self.POLL_TIMEOUT_S}s (last status={status})")
+            time.sleep(self.POLL_INTERVAL_S)
+
+
 _ADAPTERS = {
     "gemini": GeminiImageAdapter,
     "openai_images": OpenAIImagesAdapter,
+    "atlas_generate": AtlasGenerateAdapter,
 }
