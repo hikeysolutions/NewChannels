@@ -9,14 +9,21 @@
 // it long-polls FlytBot's getUpdates, matches each human reply back to its
 // videos row, and writes the approve/reject decision.
 //
-// STEP 2 SCOPE (this file, current): state writes only.
-//   approve -> status='approved'  (YouTube upload is step 3, not done here)
-//   reject  -> status='rejected', reject_reason saved, tmp/ assets kept
-// The YouTube videos.insert + 'published' transition + cleanup are added in a
-// later step and deliberately absent here, so an approve lands at 'approved' and
-// stops. The bundled multi-shorts grammar (approve short_n, per-item reject) is a
-// later step too; this parser handles the long-form approve/reject case and
-// treats anything it does not understand as a no-op with a help reply.
+// SCOPE:
+//   Reply handling: approve -> status='approved'; reject -> status='rejected'
+//     with reject_reason saved, tmp/ assets kept (Section 03a).
+//   Upload pass: every 'approved' row is uploaded to YouTube (raw https, see
+//     lib/youtube.js) and moved to 'published' with youtube_video_id + cleanup
+//     of tmp/ intermediates (Section 03 steps 9-10). This runs every invocation,
+//     so a failed upload (e.g. the Section 04a 7-day refresh-token expiry) retries
+//     on the next scheduled run instead of being lost.
+// DEFERRED (needs real CHANNEL_A_YOUTUBE_* creds + OAuth verification, a separate
+//   task): the two live tests — an actual upload, and YouTube honoring
+//   status.containsSyntheticMedia. The uploader is fully unit-tested against a
+//   mocked HTTP layer; nothing auto-uploads until credentials exist.
+// The bundled multi-shorts grammar (approve short_n, per-item reject) is a later
+// step; this parser handles the long-form approve/reject case and treats anything
+// it does not understand as a no-op with a help reply.
 //
 // One pass per invocation, then exit (the LaunchAgent re-launches on StartInterval),
 // matching flyt-poller.js. getUpdates offset is persisted between runs so a reply
@@ -33,9 +40,24 @@ const { execFileSync } = require("child_process");
 const { loadEnv } = require("./lib/env");
 const { openDb } = require("./lib/db");
 const { telegramSend } = require("./lib/publish");
+const youtube = require("./lib/youtube");
 
 const ROOT = path.resolve(__dirname, "..");
 const PYTHON = "python3.11";
+const CHANNEL_DIRS = { channel_a: "ChannelA", channel_b: "ChannelB" };
+
+// Per-video paths derived from the row's manifest_path, same convention the
+// poller uses. The final MP4 to upload lives in the channel's outputs/; the
+// intermediate assets to clean up after a confirmed upload live in tmp/<slug>/.
+function pathsFor(row) {
+  const chDir = path.join(ROOT, CHANNEL_DIRS[row.channel]);
+  const slug = path.basename(row.manifest_path || `${row.id}.json`, ".json");
+  return {
+    slug,
+    mp4Path: path.join(chDir, "outputs", `${slug}.mp4`),
+    tmpDir: path.join(chDir, "tmp", slug),
+  };
+}
 
 // Where the last processed Telegram update_id is persisted between invocations.
 // A plain JSON file (no schema change), sitting beside the tracking DB.
@@ -198,6 +220,80 @@ async function applyDecision(env, db, row, cmd, msg) {
   }
 }
 
+// ---- upload pass: drive every 'approved' row to 'published' (Section 03 step 9) ----
+// Decoupled from the reply handler on purpose: a reply only records the human
+// decision (status='approved'); this pass does the actual YouTube upload and runs
+// on every invocation, so a transient failure (e.g. the Section 04a 7-day refresh-
+// token expiry) simply retries on the next scheduled run instead of being lost.
+async function uploadApprovedRow(env, db, row, deps = {}) {
+  const uploadForRow = deps.uploadForRow || youtube.uploadForRow;
+  const paths = pathsFor(row);
+
+  if (!fs.existsSync(paths.mp4Path)) {
+    // The approved video's MP4 is gone; do not fail-loop. Alert and leave at
+    // 'approved' for manual review rather than silently churning.
+    approvalsAlert(`video ${row.id} (${paths.slug}) approved but MP4 missing`, `expected ${paths.mp4Path}`);
+    log(`video ${row.id}: approved but MP4 missing at ${paths.mp4Path} — skipping upload`);
+    return;
+  }
+
+  if (DRY_RUN) {
+    log(`[dry] would upload ${paths.mp4Path} to YouTube and mark video ${row.id} published`);
+    return;
+  }
+
+  log(`video ${row.id} "${row.title}" — uploading to YouTube (${row.channel})`);
+  let result;
+  try {
+    result = await uploadForRow(env, row, paths.mp4Path, {}, deps);
+  } catch (err) {
+    // Stays 'approved' so the next pass retries; invalid_grant is the 04a expiry.
+    approvalsAlert(`video ${row.id} (${paths.slug}) YouTube upload failed`, err.message);
+    log(`video ${row.id}: upload failed (${err.message}) — left at 'approved' for retry`);
+    return;
+  }
+
+  setStatus(db, row.id, "published", {
+    youtube_video_id: result.videoId,
+    published_at: new Date().toISOString(),
+  });
+  log(`video ${row.id} published: ${result.url}`);
+
+  // Cleanup (Section 03 step 10): remove intermediate assets only after a
+  // confirmed upload. The final MP4 in outputs/ is the deliverable, kept.
+  cleanupTmp(paths, row.id);
+}
+
+function cleanupTmp(paths, videoId) {
+  if (DRY_RUN) {
+    log(`[dry] would remove tmp assets ${paths.tmpDir}`);
+    return;
+  }
+  try {
+    if (fs.existsSync(paths.tmpDir)) {
+      fs.rmSync(paths.tmpDir, { recursive: true, force: true });
+      log(`video ${videoId}: cleaned up ${paths.tmpDir}`);
+    }
+  } catch (e) {
+    // Non-fatal: the upload already succeeded. Just note it.
+    process.stderr.write(`[approve] video ${videoId}: tmp cleanup failed: ${e.message}\n`);
+  }
+}
+
+async function processApprovedUploads(env, db, deps = {}) {
+  const rows = db.prepare(`SELECT * FROM videos WHERE status='approved' ORDER BY id ASC`).all();
+  if (rows.length === 0) return;
+  log(`${rows.length} approved video(s) pending upload`);
+  for (const row of rows) {
+    try {
+      await uploadApprovedRow(env, db, row, deps);
+    } catch (err) {
+      approvalsAlert(`video ${row.id} upload pass errored`, err.message);
+      process.stderr.write(`[approve] video ${row.id} upload pass error: ${err.message}\n`);
+    }
+  }
+}
+
 // ---- process one Telegram update ----
 async function processUpdate(env, db, update) {
   const msg = update.message;
@@ -236,6 +332,7 @@ async function main() {
   const db = openDb(dbPath);
 
   try {
+    // (1) Drain any new Telegram replies and record approve/reject decisions.
     const offset = loadOffset();
     const updates = await telegramSend(env, "getUpdates", {
       offset,
@@ -245,26 +342,28 @@ async function main() {
 
     if (!Array.isArray(updates) || updates.length === 0) {
       log("no new replies");
-      return;
-    }
-    log(`${updates.length} update(s)${DRY_RUN ? " (dry-run: no writes, no replies)" : ""}`);
-
-    let maxUpdateId = offset ? offset - 1 : -1;
-    for (const update of updates) {
-      if (typeof update.update_id === "number" && update.update_id > maxUpdateId) {
-        maxUpdateId = update.update_id;
+    } else {
+      log(`${updates.length} update(s)${DRY_RUN ? " (dry-run: no writes, no replies)" : ""}`);
+      let maxUpdateId = offset ? offset - 1 : -1;
+      for (const update of updates) {
+        if (typeof update.update_id === "number" && update.update_id > maxUpdateId) {
+          maxUpdateId = update.update_id;
+        }
+        try {
+          await processUpdate(env, db, update);
+        } catch (err) {
+          approvalsAlert(`update ${update.update_id} failed`, err.message);
+          process.stderr.write(`[approve] update ${update.update_id} error: ${err.message}\n`);
+        }
       }
-      try {
-        await processUpdate(env, db, update);
-      } catch (err) {
-        approvalsAlert(`update ${update.update_id} failed`, err.message);
-        process.stderr.write(`[approve] update ${update.update_id} error: ${err.message}\n`);
-      }
+      // Acknowledge everything drained this pass, even updates that were ignored or
+      // failed, so a single poison message cannot wedge the queue forever.
+      if (maxUpdateId >= 0) saveOffset(maxUpdateId);
     }
 
-    // Acknowledge everything drained this pass, even updates that were ignored or
-    // failed, so a single poison message cannot wedge the queue forever.
-    if (maxUpdateId >= 0) saveOffset(maxUpdateId);
+    // (2) Upload pass: push every 'approved' row to YouTube -> 'published'. Runs
+    // every invocation regardless of new replies, so failed uploads retry.
+    await processApprovedUploads(env, db);
     log("pass complete");
   } finally {
     db.close();
@@ -280,4 +379,8 @@ if (require.main === module) {
   });
 }
 
-module.exports = { parseCommand, matchRow, applyDecision, setStatus, __setDryRun: (v) => { DRY_RUN = v; } };
+module.exports = {
+  parseCommand, matchRow, applyDecision, setStatus, pathsFor,
+  uploadApprovedRow, processApprovedUploads,
+  __setDryRun: (v) => { DRY_RUN = v; },
+};
