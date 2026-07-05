@@ -26,6 +26,10 @@ const { loadEnv } = require("./lib/env");
 const { openDb } = require("./lib/db");
 const { runQaPass, blockingFlags } = require("./lib/qa");
 const { cloudinaryUpload, telegramSend, bundledCaption } = require("./lib/publish");
+const { segmentShots } = require("./lib/shots");
+const { costPerImageUsd, resolveImageModel } = require("./lib/models");
+const { generateShotPrompt, regenerateVisualPrompt } = require("./lib/qwen");
+const { repairVisualPrompts } = require("./lib/vpcheck");
 
 const ROOT = path.resolve(__dirname, "..");
 const CHANNEL_DIRS = { channel_a: "ChannelA", channel_b: "ChannelB" };
@@ -33,7 +37,9 @@ const PYTHON = "python3.11";
 
 // Section 02 cost estimates. There is no billing API, so per-video cost is
 // estimated from unit prices and logged to the videos row (Section 00c).
-const STILL_COST_USD = 0.034; // NB2 Lite standard, per image
+const STILL_COST_USD = 0.034; // NB2 Lite standard, per image (synchronous / Channel B)
+// Channel A batch stills cost is no longer hardcoded — it comes from the resolved
+// image model in config/image-models.json (costPerImageUsd), so cost follows the model.
 const HERO_COST_PER_SEC_USD = 0.05; // Seedance upper-bound, per second
 
 function log(msg) {
@@ -173,6 +179,91 @@ function loadScenes(manifestRel) {
 }
 
 
+// ---- Channel A Phase 1 (async stills). Reordered from the synchronous flow:
+// narration must precede stills because stills are cut at the narration's aligned
+// timestamps. Everything here is FREE (local VoxCPM + whisper + qwen) EXCEPT the
+// final Batch submit; dry-run stubs only that submit. Ends by persisting the batch
+// job id + status='awaiting_stills' and exiting — the cron poller (Phase 2)
+// collects the images, assembles, and publishes. ----
+async function runChannelAPhase1(db, env, ctx) {
+  const { channel, videoId, manifestRel, scriptRel, slug, combo, qa, voiceStr, dryRun } = ctx;
+  const chDir = path.join(ROOT, CHANNEL_DIRS[channel]);
+
+  setStatus(db, videoId, "generating");
+
+  // 1. Narration (local VoxCPM, voice-clone locked). Free; real even in dry-run.
+  runStage("narrator", PYTHON, ["agents/flyt-narrator.py", "--channel", channel, "--manifest", manifestRel]);
+
+  // 2. Forced alignment (local stable-ts). Free. Writes <slug>.align.json.
+  runStage("align", PYTHON, ["agents/flyt-align.py", "--channel", channel, "--manifest", manifestRel]);
+  // (Stage 5 length verification will slot in here once approved.)
+
+  // 3. Shot segmentation from the real aligned timestamps (content-driven cuts).
+  const align = JSON.parse(fs.readFileSync(path.join(chDir, "manifests", `${slug}.align.json`), "utf8"));
+  const shots = segmentShots(align.beats);
+  log(`shots: ${shots.length} windows (avg ${(align.total_audio_seconds / Math.max(1, shots.length)).toFixed(2)}s)`);
+
+  // 4. Shot-prompt pass (local qwen) + windowed vpcheck. Attach each shot's beat
+  //    render block so the batch prompt carries era/setting + CHANNEL_STYLE.
+  const manifest = JSON.parse(fs.readFileSync(path.join(ROOT, manifestRel), "utf8"));
+  const shotObjs = [];
+  for (let i = 0; i < shots.length; i += 1) {
+    const vp = await generateShotPrompt({
+      shotText: shots[i].text,
+      prevText: i > 0 ? shots[i - 1].text : null,
+      nextText: i < shots.length - 1 ? shots[i + 1].text : null,
+      channel, entity: combo.entity, situation: combo.situation,
+    });
+    const beat = manifest.scenes[shots[i].beat_index];
+    shotObjs.push({ ...shots[i], visual_prompt: vp, render: beat ? beat.render : null });
+  }
+  const repair = await repairVisualPrompts(shotObjs, {
+    regenerate: ({ scene, avoid, otherPrompts }) =>
+      regenerateVisualPrompt({ scene, avoid, otherPrompts, channel, entity: combo.entity, situation: combo.situation }),
+    maxAttempts: 2,
+  });
+  log(`shot prompts: ${repair.scenes.length} generated, repaired ${repair.repaired.length}, qa_flagged ${repair.flagged.length}`);
+
+  // 5. Write <slug>.shots.json — the input to both the Batch submit and assembly.
+  const shotsPath = path.join(chDir, "manifests", `${slug}.shots.json`);
+  fs.writeFileSync(shotsPath, `${JSON.stringify({ channel, title: manifest.title, slug, aspect: "16:9", shots: repair.scenes }, null, 2)}\n`);
+  const shotsRel = path.relative(ROOT, shotsPath);
+
+  // 6. Submit the stills Batch job (dry-run stubs the actual submit).
+  const submitArgs = ["agents/flyt-stills.py", "--channel", channel, "--shots", shotsRel, "--batch-submit"];
+  if (dryRun) submitArgs.push("--dry-run");
+  const out = runStage("batch submit", PYTHON, submitArgs);
+
+  const batchStillCost = costPerImageUsd(channel);
+  const estCost = Number((repair.scenes.length * batchStillCost).toFixed(4));
+
+  if (dryRun) {
+    setStatus(db, videoId, "dry_run_complete", { manifest_path: manifestRel, script_path: scriptRel, cost_stills: estCost, cost_total: estCost });
+    log("================ DRY-RUN COMPLETE (channel_a async) ================");
+    log(`video ${videoId}, slug "${slug}", ${repair.scenes.length} shots (~$${estCost} batch stills est.)`);
+    log(`QA: factual=${qa.factual} voice=${voiceStr} gap_logic=${qa.gapLogic} -> gate CLEAR`);
+    log("narrator + align + shots + shot-prompts real (free); batch submit stubbed. No paid I/O.");
+    log("===================================================================");
+    return;
+  }
+
+  const jm = out.match(/BATCH_JOB=(\S+)/);
+  if (!jm) throw new Error("batch submit did not return a BATCH_JOB name");
+  const batchJob = jm[1];
+  setStatus(db, videoId, "awaiting_stills", {
+    batch_job_id: batchJob,
+    batch_submitted_at: new Date().toISOString(),
+    manifest_path: manifestRel,
+    script_path: scriptRel,
+    cost_stills: estCost,
+    cost_total: estCost,
+  });
+  log("================ PHASE 1 COMPLETE — awaiting_stills ================");
+  log(`video ${videoId}, slug "${slug}": ${repair.scenes.length} shots submitted as batch ${batchJob}`);
+  log(`estimated stills cost ~$${estCost} (batch $${batchStillCost}/image, model ${resolveImageModel(channel)}). The poller will collect + assemble + publish.`);
+  log("===================================================================");
+}
+
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   const env = loadEnv();
@@ -247,6 +338,15 @@ async function main() {
       return;
     }
     log("QA gate: clear — no unresolved blocking flags, proceeding to generation");
+
+    // Channel A: two-phase async stills (Batch API). Reordered pipeline, ends at
+    // 'awaiting_stills' for the poller. Channel B keeps the synchronous flow below.
+    if (channel === "channel_a") {
+      await runChannelAPhase1(db, env, {
+        channel, videoId, manifestRel, scriptRel, slug, combo, qa, voiceStr, dryRun: args.dryRun,
+      });
+      return;
+    }
 
     // ---- DRY-RUN branch: exercise every stage that has a --dry-run mode with no
     // API calls / no writes, then stop before the stages that require real assets

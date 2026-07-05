@@ -34,19 +34,16 @@ import urllib.request
 
 import alert  # Telegram alert callback for run_with_retry's "then-alert" half
 import validate  # shared validation gate (same agents/ dir): check_still + run_with_retry
+from lib import image_providers  # model-provider registry/adapters (config/image-models.json)
 
-MODEL = "gemini-3.1-flash-lite-image"
-API_URL = f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL}:generateContent"
-# Batch API (Channel A async stills, 50% cost): submit many requests, poll, collect.
-BATCH_URL = f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL}:batchGenerateContent"
+# The image model (endpoint, request/response shape, batch mechanics, cost, auth)
+# is no longer hardcoded here. It is resolved per-channel from ChannelX/config.json
+# against config/image-models.json and handled by an adapter (agents/lib/
+# image_providers.py). This stage only assembles prompts and owns the FLOW.
 DEFAULT_ASPECT = "16:9"
-# Batch job states (v1beta). SUCCEEDED = ready to collect; PENDING/RUNNING = wait.
-BATCH_DONE = "JOB_STATE_SUCCEEDED"
-BATCH_FAIL = {"JOB_STATE_FAILED", "JOB_STATE_CANCELLED", "JOB_STATE_EXPIRED"}
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CHANNEL_DIRS = {"channel_a": "ChannelA", "channel_b": "ChannelB"}
-KEY_NAMES = ("NEWCHANNELS_GEMINI_API_KEY", "GEMINI_API_KEY")
 
 # Locked per-channel visual identity, appended to every still's visual_prompt when
 # no explicit --style override is given. This is what keeps the look CONSISTENT
@@ -92,26 +89,6 @@ def parse_args(argv):
     p.add_argument("--style", default=None, help="optional style suffix appended to each visual_prompt")
     p.add_argument("--dry-run", action="store_true", help="validate + plan only; no API calls, no image written")
     return p.parse_args(argv)
-
-
-def api_key():
-    """NB2 key from env (NEWCHANNELS_GEMINI_API_KEY wins), falling back to
-    ~/.openclaw/.env to match the JS lib's precedence. Fail fast if unset."""
-    for name in KEY_NAMES:
-        v = os.environ.get(name)
-        if v and v.strip():
-            return v.strip()
-    env_path = os.path.expanduser("~/.openclaw/.env")
-    if os.path.isfile(env_path):
-        with open(env_path, "r", encoding="utf-8") as fh:
-            for raw in fh:
-                line = raw.strip()
-                if not line or line.startswith("#") or "=" not in line:
-                    continue
-                k, _, val = line.partition("=")
-                if k.strip() in KEY_NAMES and val.strip():
-                    return val.strip().strip('"').strip("'")
-    raise RuntimeError(f"no Gemini API key: set one of {KEY_NAMES} in the environment or ~/.openclaw/.env")
 
 
 def resolve_manifest_path(manifest_arg):
@@ -189,42 +166,14 @@ def build_prompt(scene, channel, style_override=None):
     return ". ".join(p for p in parts if p)
 
 
-def generate_still(prompt, aspect, key):
-    """POST a synchronous NB2 generateContent request; return decoded JPEG bytes.
-    Raises on HTTP error, API error, safety block, or a missing image part."""
-    body = json.dumps({
-        "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {"responseModalities": ["IMAGE"], "imageConfig": {"aspectRatio": aspect}},
-    }).encode("utf-8")
-    req = urllib.request.Request(
-        f"{API_URL}?key={key}", data=body,
-        headers={"Content-Type": "application/json"}, method="POST",
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=180) as resp:
-            payload = json.loads(resp.read())
-    except urllib.error.HTTPError as exc:
-        detail = exc.read().decode("utf-8", errors="replace")[:500]
-        raise RuntimeError(f"NB2 API HTTP {exc.code}: {detail}")  # key is not echoed
-    except urllib.error.URLError as exc:
-        raise RuntimeError(f"NB2 API unreachable: {exc.reason}")
-
-    candidates = payload.get("candidates")
-    if not candidates:
-        raise RuntimeError(f"NB2 returned no candidates: {json.dumps(payload)[:300]}")
-    for part in candidates[0].get("content", {}).get("parts", []):
-        if "inlineData" in part:
-            return base64.b64decode(part["inlineData"]["data"])
-    raise RuntimeError(f"NB2 returned no image part (finishReason={candidates[0].get('finishReason')})")
-
-
-def render_scene_still(scene, out_path, *, channel, aspect, key, style):
+def render_scene_still(scene, out_path, *, channel, aspect, adapter, style):
     """Generate + validate one still with retry-once-then-alert (validate.py owns
-    the discipline). Returns the validate Report."""
+    the discipline). The provider call routes through the adapter. Returns the
+    validate Report."""
     prompt = build_prompt(scene, channel, style)
 
     def produce():
-        img = generate_still(prompt, aspect, key)
+        img = adapter.generate_still(prompt, aspect)
         with open(out_path, "wb") as fh:
             fh.write(img)
         return out_path
@@ -261,93 +210,22 @@ def load_shots(path, channel):
     return data, shots
 
 
-def build_batch_requests(shots, channel, aspect, style):
-    """One inline batch request per shot. metadata.key = the shot_index (as a
-    string) so collected results map back unambiguously to their shot."""
-    requests = []
-    for s in shots:
-        prompt = build_prompt(s, channel, style)  # shot dict has visual_prompt (+ render)
-        requests.append({
-            "request": {
-                "contents": [{"parts": [{"text": prompt}]}],
-                "generationConfig": {"responseModalities": ["IMAGE"], "imageConfig": {"aspectRatio": aspect}},
-            },
-            "metadata": {"key": str(s["shot_index"])},
-        })
-    return requests
-
-
-def _batch_http(method, url, key, body=None, timeout=120):
-    data = json.dumps(body).encode("utf-8") if body is not None else None
-    req = urllib.request.Request(url, data=data, method=method,
-                                 headers={"x-goog-api-key": key, "Content-Type": "application/json"})
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            return json.loads(resp.read())
-    except urllib.error.HTTPError as exc:
-        detail = exc.read().decode("utf-8", errors="replace")[:500]
-        raise RuntimeError(f"Batch API HTTP {exc.code}: {detail}")
-    except urllib.error.URLError as exc:
-        raise RuntimeError(f"Batch API unreachable: {exc.reason}")
-
-
-def submit_batch(requests, key, display_name):
-    body = {"batch": {"display_name": display_name,
-                      "input_config": {"requests": {"requests": requests}}}}
-    op = _batch_http("POST", BATCH_URL, key, body)
-    name = op.get("name")
-    if not name:
-        raise RuntimeError(f"batch submit returned no job name: {json.dumps(op)[:300]}")
-    return name
-
-
-def batch_state(op):
-    """Job state lives in metadata.state (long-running operation); tolerate a
-    top-level state too."""
-    meta = op.get("metadata") or {}
-    return meta.get("state") or op.get("state")
-
-
-def extract_batch_images(op):
-    """Map shot_index (int) -> JPEG bytes from a SUCCEEDED batch operation. Reads
-    the inline responses; each carries back its metadata.key. Defensive about the
-    exact nesting (inlinedResponses may sit under response or metadata)."""
-    resp = op.get("response") or {}
-    ir = resp.get("inlinedResponses")
-    if isinstance(ir, dict):          # nested: {"inlinedResponses": {"inlinedResponses": [...]}}
-        inlined = ir.get("inlinedResponses") or []
-    elif isinstance(ir, list):        # flat: {"inlinedResponses": [...]}
-        inlined = ir
-    else:
-        inlined = []
-    out = {}
-    for item in inlined:
-        key = (item.get("metadata") or {}).get("key")
-        gen = item.get("response") or {}
-        cands = gen.get("candidates") or []
-        if key is None or not cands:
-            continue
-        for part in cands[0].get("content", {}).get("parts", []):
-            if "inlineData" in part:
-                out[int(key)] = base64.b64decode(part["inlineData"]["data"])
-                break
-    return out
-
-
-def run_batch_submit(args):
+def run_batch_submit(args, adapter):
     data, shots = load_shots(args.shots, args.channel)
     slug = data.get("slug") or os.path.splitext(os.path.basename(args.shots))[0].replace(".shots", "")
-    requests = build_batch_requests(shots, args.channel, args.aspect, args.style)
-    info(f"channel={args.channel} slug=\"{slug}\" shots={len(shots)} aspect={args.aspect} (batch submit)")
+    # Prompt assembly stays here (CHANNEL_STYLE + render block); the adapter turns
+    # (shot_index, prompt) pairs into the provider's inline batch requests.
+    items = [(s["shot_index"], build_prompt(s, args.channel, args.style)) for s in shots]
+    requests = adapter.build_batch_requests(items, args.aspect)
+    info(f"channel={args.channel} slug=\"{slug}\" shots={len(shots)} aspect={args.aspect} model={adapter.model_id} (batch submit)")
     if args.dry_run:
-        body = {"batch": {"display_name": slug, "input_config": {"requests": {"requests": requests}}}}
+        body = adapter.batch_submit_body(requests, slug)
         size = len(json.dumps(body).encode("utf-8"))
         info(f"[dry-run] built {len(requests)} inline batch requests, body {size} bytes, no submit")
         info(f"  sample request[0]: {json.dumps(requests[0])[:220]}")
         info(f"  keys: {', '.join(r['metadata']['key'] for r in requests[:6])}{' ...' if len(requests) > 6 else ''}")
         return 0
-    key = api_key()
-    name = submit_batch(requests, key, slug)
+    name = adapter.submit_batch(requests, slug)
     info(f"[submitted] {len(requests)} requests -> batch job {name}")
     # Machine-readable line the orchestrator parses to persist videos.batch_job_id.
     sys.stdout.write(f"BATCH_JOB={name}\n")
@@ -355,22 +233,21 @@ def run_batch_submit(args):
     return 0
 
 
-def run_batch_collect(args):
+def run_batch_collect(args, adapter):
     if not args.job:
         raise ValueError("--batch-collect requires --job <batches/...>")
     data, shots = load_shots(args.shots, args.channel)
     slug = data.get("slug") or os.path.splitext(os.path.basename(args.shots))[0].replace(".shots", "")
-    key = api_key()
-    op = _batch_http("GET", f"https://generativelanguage.googleapis.com/v1beta/{args.job}", key)
-    state = batch_state(op)
+    op = adapter.poll_batch(args.job)
+    state = adapter.batch_state(op)
     info(f"batch {args.job} state={state}")
-    if state != BATCH_DONE:
-        if state in BATCH_FAIL:
+    if not adapter.is_done(state):
+        if adapter.is_failed(state):
             raise RuntimeError(f"batch job {args.job} ended in {state}")
         info("[pending] not ready yet; nothing collected")
         return 2  # distinct 'not ready' signal for the poller
 
-    images = extract_batch_images(op)
+    images = adapter.collect_images(op)
     if not images:
         raise RuntimeError("batch SUCCEEDED but no images could be extracted (result shape?)")
 
@@ -406,7 +283,7 @@ def run_batch_collect(args):
     sidecar = {"channel": args.channel, "title": data.get("title"), "slug": slug,
                "source_shots": os.path.relpath(args.shots if os.path.isabs(args.shots)
                                                 else os.path.join(ROOT, args.shots), ROOT),
-               "model": MODEL, "aspect": args.aspect, "assets": assets}
+               "model": adapter.model_name, "aspect": args.aspect, "assets": assets}
     with open(sidecar_path, "w", encoding="utf-8") as fh:
         json.dump(sidecar, fh, indent=2)
         fh.write("\n")
@@ -421,11 +298,18 @@ def run_batch_collect(args):
 def main(argv):
     args = parse_args(argv)
 
+    # Which image model this channel uses (config/image-models.json via
+    # ChannelX/config.json). Adapter owns the endpoint/request/response/batch/auth.
+    adapter = image_providers.get_adapter(channel=args.channel)
+
     # Mode dispatch: batch submit / collect (Channel A async) vs synchronous.
     if args.batch_submit or args.batch_collect:
         if not args.shots:
             raise ValueError("batch mode requires --shots <path>")
-        return run_batch_submit(args) if args.batch_submit else run_batch_collect(args)
+        if not adapter.supports_batch:
+            raise ValueError(f"image model '{adapter.model_id}' does not support batch mode "
+                             f"(set a batch-capable image_model in {CHANNEL_DIRS[args.channel]}/config.json)")
+        return run_batch_submit(args, adapter) if args.batch_submit else run_batch_collect(args, adapter)
 
     if not args.manifest:
         raise ValueError("synchronous mode requires --manifest (or use --batch-submit/--batch-collect with --shots)")
@@ -447,7 +331,6 @@ def main(argv):
             info(f"  scene {i:02d} prompt: {build_prompt(scene, args.channel, args.style)[:90]}")
         return 0
 
-    key = api_key()
     os.makedirs(out_dir, exist_ok=True)
 
     assets = []
@@ -455,7 +338,7 @@ def main(argv):
     for i, scene in stills:
         jpg_path = os.path.join(out_dir, f"scene_{i:02d}.jpg")
         t0 = time.time()
-        report = render_scene_still(scene, jpg_path, channel=args.channel, aspect=args.aspect, key=key, style=args.style)
+        report = render_scene_still(scene, jpg_path, channel=args.channel, aspect=args.aspect, adapter=adapter, style=args.style)
         dims = next((c.metrics for c in report.checks if c.name == "aspect"), {})
         w, h = dims.get("width"), dims.get("height")
         info(f"scene {i:02d}: {w}x{h} jpg in {time.time() - t0:.1f}s -> {os.path.relpath(jpg_path, ROOT)}")
@@ -472,7 +355,7 @@ def main(argv):
         "channel": args.channel,
         "title": manifest.get("title"),
         "source_manifest": os.path.relpath(manifest_path, ROOT),
-        "model": MODEL,
+        "model": adapter.model_name,
         "aspect": args.aspect,
         "assets": assets,
     }

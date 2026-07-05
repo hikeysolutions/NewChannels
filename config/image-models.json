@@ -1,0 +1,36 @@
+{
+  "gemini-nb2-batch": {
+    "adapter": "gemini",
+    "display_name": "Nano Banana 2 Lite (Gemini, Batch)",
+    "model": "gemini-3.1-flash-lite-image",
+    "auth_env": ["NEWCHANNELS_GEMINI_API_KEY", "GEMINI_API_KEY"],
+    "mode": "batch",
+    "supports_batch": true,
+    "cost_per_image_usd": 0.017,
+    "endpoints": {
+      "sync": "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
+      "batch_submit": "https://generativelanguage.googleapis.com/v1beta/models/{model}:batchGenerateContent",
+      "batch_status": "https://generativelanguage.googleapis.com/v1beta/{job}"
+    },
+    "batch": {
+      "done": "JOB_STATE_SUCCEEDED",
+      "failed": ["JOB_STATE_FAILED", "JOB_STATE_CANCELLED", "JOB_STATE_EXPIRED"]
+    },
+    "output": { "kind": "inline_base64", "mime": "image/jpeg" },
+    "quirks": "JPEG out; sync uses ?key= query param, batch uses x-goog-api-key header; aspect via generationConfig.imageConfig.aspectRatio; inline-request batch; 50% cost vs sync"
+  },
+  "gpt-image-2": {
+    "adapter": "openai_images",
+    "display_name": "GPT Image 2 (OpenAI, future stub)",
+    "model": "gpt-image-2",
+    "auth_env": ["OPENAI_API_KEY"],
+    "mode": "sync",
+    "supports_batch": false,
+    "cost_per_image_usd": 0.04,
+    "endpoints": {
+      "sync": "https://api.openai.com/v1/images/generations"
+    },
+    "output": { "kind": "b64_json", "mime": "image/png" },
+    "quirks": "STUB, not wired. Synchronous only, no batch API; size expressed as WxH (e.g. 1792x1024) not an aspect ratio; response is data[].b64_json (PNG)"
+  }
+}
