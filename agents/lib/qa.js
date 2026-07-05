@@ -159,6 +159,48 @@ function gapLogicFlags(scenes) {
   return flags;
 }
 
+// ---- data_visual_pacing: deterministic, ADVISORY (never gates). data_visual
+// scenes should punctuate the character-driven narrative as occasional palette
+// cleansers: never adjacent, roughly 1 per 4-6 scenes, not required at all.
+// Flags land in qa_flags (category "data_visual_pacing") for weekly human
+// review, same as factual_accuracy — visible, never blocking. ----
+function dataVisualPacingFlags(scenes) {
+  const flags = [];
+  const isData = (s) => s && s.render && s.render.subject_type === "data_visual";
+  const dataIdx = scenes.map((s, i) => (isData(s) ? i : -1)).filter((i) => i >= 0);
+  const n = scenes.length;
+
+  // (a) adjacency: two data_visual scenes back to back defeats the punctuation role.
+  for (let k = 1; k < dataIdx.length; k += 1) {
+    if (dataIdx[k] === dataIdx[k - 1] + 1) {
+      flags.push({
+        claim: `adjacent data_visual scenes (${dataIdx[k - 1]} and ${dataIdx[k]}): data visuals must punctuate character scenes, never cluster`,
+        scene: `blocks ${dataIdx[k - 1]}-${dataIdx[k]}`,
+      });
+    }
+  }
+
+  // (b) density: more than ~1 per 4 scenes reads as an infographic video, not
+  //     punctuation. ceil(n/4) is the generous edge of the 1-per-4-6 guidance.
+  const maxData = Math.ceil(n / 4);
+  if (dataIdx.length > maxData) {
+    flags.push({
+      claim: `${dataIdx.length} data_visual scenes in ${n} (guidance ~1 per 4-6): too dense, at indexes ${dataIdx.join(", ")}`,
+      scene: `blocks ${dataIdx.join(", ")}`,
+    });
+  }
+
+  // (c) absence is only worth a note on a long script (short ones may honestly
+  //     have no quantitative anchor).
+  if (dataIdx.length === 0 && n >= 8) {
+    flags.push({
+      claim: `no data_visual scenes in ${n} blocks: script carried no quantitative anchor (informational, not required)`,
+      scene: null,
+    });
+  }
+  return flags;
+}
+
 // ---- style_minor: cheap em/en-dash regex check on the narration. Non-blocking;
 // a leftover from the persona fix. Reported so it's visible, never gates. ----
 function emDashFlags(narration) {
@@ -181,7 +223,7 @@ function insertFlag(db, { videoId, channel, claim, scene, category, resolution }
 // returns a summary the orchestrator/test can print. Never throws on model
 // failure: it degrades to a blocking 'pending' flag so the gate stays safe. ----
 function runQaPass(db, { videoId, channel, scriptText, scenes }) {
-  const summary = { factual: 0, voice: null, gapLogic: 0, styleMinor: 0 };
+  const summary = { factual: 0, voice: null, gapLogic: 0, styleMinor: 0, dataVisualPacing: 0 };
   const narration = scenes.map((s) => (s.narration || "").trim()).filter(Boolean).join("\n");
   const gapStateSeq = scenes.map((s) => s.gap_state);
 
@@ -234,6 +276,13 @@ function runQaPass(db, { videoId, channel, scriptText, scenes }) {
   }
   summary.styleMinor = styleFlags.length;
 
+  // 5. data_visual pacing (deterministic, ADVISORY — logged, never gates)
+  const pacingFlags = dataVisualPacingFlags(scenes);
+  for (const f of pacingFlags) {
+    insertFlag(db, { videoId, channel, claim: f.claim, scene: f.scene, category: "data_visual_pacing", resolution: "pending" });
+  }
+  summary.dataVisualPacing = pacingFlags.length;
+
   return summary;
 }
 
@@ -261,6 +310,7 @@ module.exports = {
   factualAccuracyFlags,
   voiceConsistencyScore,
   gapLogicFlags,
+  dataVisualPacingFlags,
   emDashFlags,
   runQaPass,
   blockingFlags,
