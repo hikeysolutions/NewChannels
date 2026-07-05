@@ -109,3 +109,17 @@ Side effect to accept: qwen imitates the example's visual_prompt wording at the 
 ## data_visual under-tagging — log only, do not fix yet (2026-07-05)
 
 data_visual under-tagging: qwen currently tags 1-2 data_visual scenes even when Stage 1 writes 3 anchors. Not a bug yet, real usage will show if this matters. Revisit trigger: if 3 of the next 5 real (non-test) videos come back under-tagged relative to anchors written, that's the signal to strengthen the qwen prompt/example (same "pattern needs 3+ occurrences" logic as the Boris dream.js worker). Until then, log only, don't gate, don't fix. The advisory check lives in qa.js dataVisualPacingFlags check (d), category data_visual_pacing, never blocking.
+
+---
+
+## Assembly, providers, batch/sync routing, and the qa gate (2026-07-05)
+
+**[2026-07-05] | Assembly: FFmpeg confirmed correct for the current stills+timestamps use case (verified via research comparison). Revisit Remotion specifically when the caption/era-tag overlay system (deferred Section 08 TEMPLATE.md wiring) gets built — that's the point where dynamic per-scene text overlays make FFmpeg meaningfully harder to maintain than Remotion. Not before.**
+
+**[2026-07-05] | Model provider registries (LLM: Groq/Cerebras; Image: Gemini/Atlas) are config-driven, not hardcoded per-agent — same --channel parameterization discipline as script/style/title logic. Confirmed via real fallback test: flipping Channel A's image_model config back to Gemini after Atlas work was added required zero code changes and worked identically to before. Any future provider swap (new LLM, image model discontinued, pricing change) should be a config edit only.**
+
+**[2026-07-05] | Atlas Cloud does not expose a true bulk-submit batch endpoint for GPT Image 2 despite marketing language — confirmed against actual public API docs (only single generateImage + prediction/{id} polling exists). Real batch-level throughput requires a concurrency-capped async worker pool built on our end, not a native Atlas batch job. This is what the sync-routing path implements.**
+
+**[2026-07-05] | Sync-routing (non-batch providers): with a sync provider, paid generation runs inside the poller's collect step. At production shot-counts (~160-190 for an 8-min video), sequential generation would take 10+ minutes and risks the LaunchAgent poller interval overlapping itself. Concurrency-capped worker pool required — this was corrected after an initial sequential implementation surfaced the issue in real testing.**
+
+**[2026-07-05] | test_qa_gate.js's "gate returns >=1 blocker" failure was flagged as pre-existing across at least 3 separate sessions before actually being investigated and fixed (commit e347ac0, "qa gate test now proves blocking with a bad fixture"). Lesson: don't let a flagged-but-deferred test failure on the hard-stop QA gate ride along indefinitely — it directly affects whether a bad video actually gets blocked in production.**
