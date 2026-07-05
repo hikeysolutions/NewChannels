@@ -209,7 +209,12 @@ async function publish(env, row, paths, dryRun) {
   log(`telegram delivered: message_id ${tg.message_id}`);
 
   // HARD STOP at the approval gate. No YouTube upload. Human replies in Telegram.
-  setStatus(db, row.id, "pending_approval");
+  // Persist the approval message's id + chat so flyt-approvals.js can match a
+  // reply (reply_to_message.message_id) back to this row.
+  setStatus(db, row.id, "pending_approval", {
+    tg_message_id: tg.message_id,
+    tg_chat_id: String(env.FLYT_CHAT_ID),
+  });
   log(`video ${row.id} at pending_approval — will NOT publish until a human approves in Telegram.`);
 }
 

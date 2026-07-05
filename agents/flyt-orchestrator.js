@@ -425,6 +425,8 @@ async function main() {
     setStatus(db, videoId, "pending_approval", {
       manifest_path: manifestRel,
       script_path: scriptRel,
+      tg_message_id: tg.message_id,
+      tg_chat_id: String(env.FLYT_CHAT_ID),
     });
 
     // ---- verification report ----
