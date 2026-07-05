@@ -13,8 +13,8 @@
       "batch_status": "https://generativelanguage.googleapis.com/v1beta/{job}"
     },
     "batch": {
-      "done": "JOB_STATE_SUCCEEDED",
-      "failed": ["JOB_STATE_FAILED", "JOB_STATE_CANCELLED", "JOB_STATE_EXPIRED"]
+      "done": "BATCH_STATE_SUCCEEDED",
+      "failed": ["BATCH_STATE_FAILED", "BATCH_STATE_CANCELLED", "BATCH_STATE_EXPIRED"]
     },
     "output": { "kind": "inline_base64", "mime": "image/jpeg" },
     "quirks": "JPEG out; sync uses ?key= query param, batch uses x-goog-api-key header; aspect via generationConfig.imageConfig.aspectRatio; inline-request batch; 50% cost vs sync"
