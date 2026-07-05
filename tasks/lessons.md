@@ -103,3 +103,9 @@ Fixed by dropping the reservation 5500 -> 4800 (input is now ~2700). The style g
 
 **[2026-07-05] | qwen2.5:7b ignored a detailed prose rule ("use subject_type data_visual when...") across 4 straight runs — zero tagged scenes — but tagged correctly the moment the JSON shape EXAMPLE contained a data_visual scene. | For qwen2.5:7b (and small instruct models generally), a new output category must appear in the few-shot/JSON-shape example, not just in the rules text. Examples beat prose.**
 Side effect to accept: qwen imitates the example's visual_prompt wording at the scene level. Harmless for data_visual (the per-shot generateDataVisualPrompt pass writes the real graphic prompt), but keep example wording generic.
+
+---
+
+## data_visual under-tagging — log only, do not fix yet (2026-07-05)
+
+data_visual under-tagging: qwen currently tags 1-2 data_visual scenes even when Stage 1 writes 3 anchors. Not a bug yet, real usage will show if this matters. Revisit trigger: if 3 of the next 5 real (non-test) videos come back under-tagged relative to anchors written, that's the signal to strengthen the qwen prompt/example (same "pattern needs 3+ occurrences" logic as the Boris dream.js worker). Until then, log only, don't gate, don't fix. The advisory check lives in qa.js dataVisualPacingFlags check (d), category data_visual_pacing, never blocking.

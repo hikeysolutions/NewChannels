@@ -164,6 +164,18 @@ function gapLogicFlags(scenes) {
 // cleansers: never adjacent, roughly 1 per 4-6 scenes, not required at all.
 // Flags land in qa_flags (category "data_visual_pacing") for weekly human
 // review, same as factual_accuracy — visible, never blocking. ----
+// A scene "carries a quantity" if its narration states a number the script could
+// anchor on — a digit run or a spelled-out count/fraction. Deterministic and
+// deliberately generous on the number-word side: Stage 1 writes anchors in words
+// ("up to fourteen hours", "half the night"), so digit-only matching would miss them.
+const NUMBER_WORDS =
+  "(?:one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|" +
+  "fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty|" +
+  "sixty|seventy|eighty|ninety|hundred|thousand|million|billion|" +
+  "half|third|quarter|dozen|twice|double|triple)";
+const QUANTITY_RE = new RegExp(String.raw`\b\d+(?:[.,]\d+)?\b|\b${NUMBER_WORDS}\b`, "i");
+const carriesQuantity = (s) => s && typeof s.narration === "string" && QUANTITY_RE.test(s.narration);
+
 function dataVisualPacingFlags(scenes) {
   const flags = [];
   const isData = (s) => s && s.render && s.render.subject_type === "data_visual";
@@ -195,6 +207,20 @@ function dataVisualPacingFlags(scenes) {
   if (dataIdx.length === 0 && n >= 8) {
     flags.push({
       claim: `no data_visual scenes in ${n} blocks: script carried no quantitative anchor (informational, not required)`,
+      scene: null,
+    });
+  }
+
+  // (d) under-tagging: qwen tagged fewer data_visual scenes than the script wrote
+  //     quantitative anchors. Advisory visibility only — the signal that qwen's
+  //     tagging is dropping anchors Stage 1 planted. Never gates, never fixes
+  //     (see tasks/lessons.md "data_visual under-tagging"). anchorCount counts
+  //     scenes whose narration carries a quantity; each such scene is a beat Stage 1
+  //     anchored on, so more anchors than data_visual scenes = dropped anchors.
+  const anchorCount = scenes.filter(carriesQuantity).length;
+  if (anchorCount > dataIdx.length) {
+    flags.push({
+      claim: `data_visual under-tagged: ${dataIdx.length} data_visual scene(s) but ${anchorCount} scene(s) carry a quantitative anchor — qwen dropped ${anchorCount - dataIdx.length} anchor(s) Stage 1 planted (advisory; see lessons.md revisit trigger)`,
       scene: null,
     });
   }
