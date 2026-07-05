@@ -83,6 +83,14 @@ class ImageAdapter:
     def cost_per_image_usd(self):
         return float(self.spec.get("cost_per_image_usd", 0.0))
 
+    def effective_aspect(self, requested_aspect):
+        """The aspect ratio the provider actually delivers for a requested one.
+        Default: the provider honors the request (Gemini picks pixels at the
+        requested ratio). Providers locked to a fixed set of sizes override this
+        to report what they truly output, so validation checks against reality
+        rather than the nominal request."""
+        return requested_aspect
+
     def api_key(self):
         """Key from env (registry auth_env order wins), falling back to
         ~/.openclaw/.env to match the JS lib precedence. Fail fast if unset."""
@@ -278,6 +286,13 @@ class AtlasGenerateAdapter(ImageAdapter):
     def _size_for(self, aspect):
         by = self.spec.get("size_by_aspect") or {}
         return by.get(aspect, self.spec.get("default_size", "1024x1024"))
+
+    def effective_aspect(self, requested_aspect):
+        # Atlas has no true 16:9; it delivers the mapped fixed size (e.g. a 16:9
+        # request maps to 1536x1024 = 3:2). Report that real ratio so the still
+        # validator's aspect check passes instead of flagging every shot.
+        w, h = self._size_for(requested_aspect).lower().split("x")
+        return f"{int(w)}:{int(h)}"
 
     def _headers(self):
         return {

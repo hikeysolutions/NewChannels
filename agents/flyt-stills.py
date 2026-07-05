@@ -317,6 +317,75 @@ def run_batch_collect(args, adapter):
     return 0
 
 
+# ---- Sync-provider shots path (batch-less providers, e.g. Atlas GPT Image 2) ---
+# Same --batch-submit / --batch-collect CLI the orchestrator and poller call, but
+# there is no provider batch job: submit only registers intent (fast, free), and
+# the real paid generation happens synchronously per-shot at collect (i.e. in the
+# poller), writing the SAME <slug>.stills.json sidecar the batch collect writes so
+# assembly and publish are byte-for-byte identical downstream.
+def run_sync_submit(args, adapter):
+    data, shots = load_shots(args.shots, args.channel)
+    slug = data.get("slug") or os.path.splitext(os.path.basename(args.shots))[0].replace(".shots", "")
+    info(f"channel={args.channel} slug=\"{slug}\" shots={len(shots)} model={adapter.model_id} "
+         f"(sync provider: no batch API, generation deferred to collect)")
+    if args.dry_run:
+        info(f"[dry-run] {len(shots)} shots would generate synchronously at collect; no submit")
+        return 0
+    # No provider job to create. Emit a sentinel so the orchestrator persists a
+    # batch_job_id and the poller schedules a collect exactly like the batch path.
+    job = f"sync:{slug}"
+    info(f"[submitted] provider has no batch API; {len(shots)} shots deferred to synchronous collect")
+    sys.stdout.write(f"BATCH_JOB={job}\n")
+    sys.stdout.flush()
+    return 0
+
+
+def run_sync_collect(args, adapter):
+    if not args.job:
+        raise ValueError("--batch-collect requires --job <sync:...>")
+    data, shots = load_shots(args.shots, args.channel)
+    slug = data.get("slug") or os.path.splitext(os.path.basename(args.shots))[0].replace(".shots", "")
+
+    # Validate against what this provider actually delivers, not the nominal
+    # request (Atlas has no true 16:9; it returns its mapped fixed size).
+    eff_aspect = adapter.effective_aspect(args.aspect)
+    info(f"sync collect: provider {adapter.model_id} has no batch API — generating "
+         f"{len(shots)} shots synchronously (effective aspect {eff_aspect})")
+
+    channel_dir = os.path.join(ROOT, CHANNEL_DIRS[args.channel])
+    out_dir = os.path.join(channel_dir, "tmp", slug)
+    os.makedirs(out_dir, exist_ok=True)
+    sidecar_path = os.path.join(channel_dir, "manifests", f"{slug}.stills.json")
+
+    assets = []
+    for s in shots:
+        idx = s["shot_index"]
+        jpg_path = os.path.join(out_dir, f"shot_{idx:03d}.jpg")
+        t0 = time.time()
+        # render_scene_still owns the retry-once-then-alert discipline + validation;
+        # build_prompt applies CHANNEL_STYLE/DATA_VISUAL_STYLE exactly as the batch
+        # path does. Shots carry visual_prompt + inherited render, same as batch.
+        report = render_scene_still(s, jpg_path, channel=args.channel, aspect=eff_aspect,
+                                    adapter=adapter, style=args.style)
+        dims = next((c.metrics for c in report.checks if c.name == "aspect"), {})
+        w, h = dims.get("width"), dims.get("height")
+        info(f"  shot {idx:03d}: {w}x{h} in {time.time() - t0:.1f}s valid={report.ok}")
+        assets.append({"shot_index": idx, "jpg": os.path.relpath(jpg_path, ROOT),
+                       "width": w, "height": h, "aspect": args.aspect,
+                       "valid": report.ok, "visual_prompt": s["visual_prompt"]})
+
+    sidecar = {"channel": args.channel, "title": data.get("title"), "slug": slug,
+               "source_shots": os.path.relpath(args.shots if os.path.isabs(args.shots)
+                                                else os.path.join(ROOT, args.shots), ROOT),
+               "model": adapter.model_name, "aspect": args.aspect, "assets": assets}
+    with open(sidecar_path, "w", encoding="utf-8") as fh:
+        json.dump(sidecar, fh, indent=2)
+        fh.write("\n")
+    info(f"[done] generated {len(assets)}/{len(shots)} shots synchronously "
+         f"-> {os.path.relpath(sidecar_path, ROOT)}")
+    return 0
+
+
 def main(argv):
     args = parse_args(argv)
 
@@ -328,9 +397,12 @@ def main(argv):
     if args.batch_submit or args.batch_collect:
         if not args.shots:
             raise ValueError("batch mode requires --shots <path>")
+        # A provider with no batch API (e.g. Atlas GPT Image 2) keeps the SAME
+        # submit/collect CLI contract the orchestrator and poller depend on, but
+        # generates synchronously per-shot at collect instead of raising. The
+        # Gemini batch path (supports_batch=true) is entirely unchanged.
         if not adapter.supports_batch:
-            raise ValueError(f"image model '{adapter.model_id}' does not support batch mode "
-                             f"(set a batch-capable image_model in {CHANNEL_DIRS[args.channel]}/config.json)")
+            return run_sync_submit(args, adapter) if args.batch_submit else run_sync_collect(args, adapter)
         return run_batch_submit(args, adapter) if args.batch_submit else run_batch_collect(args, adapter)
 
     if not args.manifest:
