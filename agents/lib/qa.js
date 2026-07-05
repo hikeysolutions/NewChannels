@@ -28,7 +28,13 @@ const OPEN_RESOLUTIONS = ["pending", "video_rejected"];
 const VOICE_REJECT_THRESHOLD = 5;
 // gap_logic: a maximal run of consecutive "opens" this long (with no intervening
 // partial_resolve/resolves) reads as a stagnant chain, not overlapping gaps.
-const OPENS_RUN_THRESHOLD = 4;
+// Calibrated to the LOCKED 5-beat curiosity format: the hook + context + behavior +
+// hidden-detail beats legitimately open new facts through the belly (qwen splits
+// them into ~6 scenes), so a properly-arced script (early partial_resolve, real
+// ending resolves) still carries a ~6-long opens belly. The check is `run >=`, so 7
+// admits that 6-run while still catching genuine 7+ stagnation. The (a) never-advances
+// and (b) opens->resolves-with-no-partial checks remain the real stagnation guards.
+const OPENS_RUN_THRESHOLD = 7;
 
 // ---- local qwen (Ollama) JSON helper. Free + local; never leaves the box. ----
 function ollamaJson(prompt, { timeoutSec = 90 } = {}) {
