@@ -28,7 +28,7 @@ const { runQaPass, blockingFlags } = require("./lib/qa");
 const { cloudinaryUpload, telegramSend, bundledCaption } = require("./lib/publish");
 const { segmentShots } = require("./lib/shots");
 const { costPerImageUsd, resolveImageModel } = require("./lib/models");
-const { generateShotPrompt, regenerateVisualPrompt } = require("./lib/qwen");
+const { generateShotPrompt, generateDataVisualPrompt, regenerateVisualPrompt } = require("./lib/qwen");
 const { repairVisualPrompts } = require("./lib/vpcheck");
 
 const ROOT = path.resolve(__dirname, "..");
@@ -207,15 +207,58 @@ async function runChannelAPhase1(db, env, ctx) {
   //    render block so the batch prompt carries era/setting + CHANNEL_STYLE.
   const manifest = JSON.parse(fs.readFileSync(path.join(ROOT, manifestRel), "utf8"));
   const shotObjs = [];
+  // Per-run visual-grammar registry (data_visual shots only): normalized topic ->
+  // { layout, visual_prompt }. When a later data shot revisits a topic already
+  // shown, the generator is forced to reuse the earlier layout/structure instead
+  // of inventing a new chart style. Lives only for this script's shot pass.
+  const dataLayouts = new Map();
+  const normTopic = (t) => t.toLowerCase().replace(/[^a-z0-9 ]+/g, "").replace(/\s+/g, " ").trim();
   for (let i = 0; i < shots.length; i += 1) {
-    const vp = await generateShotPrompt({
-      shotText: shots[i].text,
-      prevText: i > 0 ? shots[i - 1].text : null,
-      nextText: i < shots.length - 1 ? shots[i + 1].text : null,
-      channel, entity: combo.entity, situation: combo.situation,
-    });
     const beat = manifest.scenes[shots[i].beat_index];
-    shotObjs.push({ ...shots[i], visual_prompt: vp, render: beat ? beat.render : null });
+    const isDataVisual = beat && beat.render && beat.render.subject_type === "data_visual";
+    let vp;
+    let dataMeta = null;
+    if (isDataVisual) {
+      // First qwen call proposes a topic; if that topic is already registered,
+      // a second call is forced onto the registered layout. Retry-once on any
+      // validation/transport failure (free local stage), then hard-fail.
+      const genData = async (reuse) => generateDataVisualPrompt({
+        shotText: shots[i].text, channel, entity: combo.entity, situation: combo.situation, reuse,
+      });
+      const withRetry = async (fn) => {
+        try { return await fn(); } catch (err) {
+          log(`data-visual prompt retry (shot ${i}): ${err.message}`);
+          return fn();
+        }
+      };
+      let dv = await withRetry(() => genData(null));
+      const known = dataLayouts.get(normTopic(dv.topic));
+      if (known && known.layout !== dv.layout) {
+        dv = await withRetry(() => genData({ topic: dv.topic, ...known }));
+      }
+      if (!dataLayouts.has(normTopic(dv.topic))) {
+        dataLayouts.set(normTopic(dv.topic), { layout: dv.layout, visual_prompt: dv.visual_prompt });
+      }
+      vp = dv.visual_prompt;
+      dataMeta = { layout: dv.layout, topic: dv.topic, label: dv.label, reused: Boolean(known) };
+    } else {
+      vp = await generateShotPrompt({
+        shotText: shots[i].text,
+        prevText: i > 0 ? shots[i - 1].text : null,
+        nextText: i < shots.length - 1 ? shots[i + 1].text : null,
+        channel, entity: combo.entity, situation: combo.situation,
+      });
+    }
+    shotObjs.push({
+      ...shots[i],
+      visual_prompt: vp,
+      render: beat ? beat.render : null,
+      ...(dataMeta ? { data_visual: dataMeta } : {}),
+    });
+  }
+  if (dataLayouts.size > 0) {
+    const dataShots = shotObjs.filter((s) => s.data_visual);
+    log(`data visuals: ${dataShots.length} shot(s), ${dataLayouts.size} topic(s), reused ${dataShots.filter((s) => s.data_visual.reused).length}`);
   }
   const repair = await repairVisualPrompts(shotObjs, {
     regenerate: ({ scene, avoid, otherPrompts }) =>

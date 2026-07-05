@@ -225,4 +225,106 @@ async function generateShotPrompt({ shotText, prevText, nextText, channel, entit
   return parsed.visual_prompt.trim();
 }
 
-module.exports = { toSceneJson, regenerateVisualPrompt, generateShotPrompt, MODEL };
+// Data-visual shot-prompt pass (stage 6, data_visual branch). For a shot whose
+// beat carries render.subject_type === "data_visual", write a stylized data
+// graphic prompt in the channel's SAME flat 2D minimalist style, from a fixed
+// layout vocabulary, with an on-screen label capped at 1-3 words. Returns
+// { visual_prompt, layout, topic, label } so the orchestrator can key its
+// per-run grammar registry (topic -> layout) and reuse layouts when a later
+// shot revisits the same data point. Pass `reuse` ({ topic, layout,
+// visual_prompt }) to force the earlier graphic's layout/structure. Throws on
+// transport/HTTP/JSON failure or an out-of-vocabulary result so the caller can
+// retry-once-then-alert rather than shipping a malformed graphic prompt.
+const DATA_VISUAL_LAYOUTS = ["timeline_bar", "radius_diagram", "donut_chart", "line_graph", "icon_count"];
+
+async function generateDataVisualPrompt({ shotText, channel, entity, situation, reuse }) {
+  const reuseBlock = reuse
+    ? [
+        "LAYOUT REUSE (MANDATORY): this shot revisits a data point already shown earlier in the video.",
+        `Earlier topic: ${reuse.topic}. Earlier layout: ${reuse.layout}.`,
+        `Earlier graphic prompt (match its layout and structure, changing ONLY the value/highlighted portion and label): ${reuse.visual_prompt}`,
+        `You MUST set "layout" to "${reuse.layout}" and describe the SAME graphic structure, not a new chart style.`,
+      ].join("\n")
+    : "";
+  const prompt = [
+    "You write ONE image-generation prompt (visual_prompt) for a single ~3-second DATA GRAPHIC shot in a video.",
+    'Output ONLY valid JSON of the exact shape: { "visual_prompt": "...", "layout": "...", "topic": "...", "label": "..." }. No prose.',
+    "",
+    "The shot is a stylized data/explainer graphic in the SAME flat 2D minimalist vector style as the video's stick-figure scenes. It is NOT a separate infographic style: no gradients, no 3D, no gridlines, no dense annotation, no chart-software look.",
+    "Requirements:",
+    `  - layout: exactly one of: ${DATA_VISUAL_LAYOUTS.join(", ")}. Pick the layout that most directly shows the shot's ONE quantity.`,
+    "  - The graphic shows EXACTLY ONE quantity (a duration, distance, proportion, count, or trend) taken from this shot's narration. Never two quantities, never a legend.",
+    "  - label: the ONLY on-screen text, 1 to 3 words MAXIMUM, near-instantly readable (e.g. \"9 hours\", \"half the night\"). All explanation lives in the narration, never on screen.",
+    "  - topic: a short 1-4 word name for the underlying data point (e.g. \"sleep duration\"), stable enough that a later revisit of the same fact would name it the same way.",
+    "  - visual_prompt: describe the graphic concretely: the layout, the single quantity it shows, where the label sits, and the color semantics below. No camera framing language, no characters unless a tiny simplified figure is integral to the diagram (e.g. a figure at the center of a radius diagram).",
+    "COLOR SEMANTICS (fixed, not decorative): dark baseline tone for the unknown or natural state; neutral light tone for the established fact; ONE reserved accent color used ONLY for the portion representing human intervention, change, or something gained/lost. Nothing else may use the accent.",
+    "HARD RULE: describe ONLY what can be seen. No sounds, no silence, no temperature, no smell, no emotion.",
+    "",
+    reuseBlock,
+    channel ? `channel: ${channel}` : "",
+    entity ? `entity: ${entity}` : "",
+    situation ? `situation: ${situation}` : "",
+    "",
+    `THIS shot's narration (its one quantity is what the graphic shows): ${shotText}`,
+  ].filter((l) => l !== "").join("\n");
+
+  const body = {
+    model: MODEL,
+    prompt,
+    format: "json",
+    stream: false,
+    options: { temperature: 0.4 },
+  };
+
+  let res;
+  try {
+    res = await fetch(OLLAMA_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  } catch (err) {
+    throw new Error(`Ollama request failed (is 'ollama serve' running on 11434?): ${err.message}`);
+  }
+  if (!res.ok) throw new Error(`Ollama returned HTTP ${res.status}`);
+  const payload = await res.json();
+  if (!payload.response) throw new Error("Ollama returned an empty response field");
+  let parsed;
+  try {
+    parsed = JSON.parse(payload.response);
+  } catch (err) {
+    throw new Error(`qwen did not return valid JSON: ${err.message}`);
+  }
+  // Fail-fast validation at the boundary: qwen output is never trusted.
+  if (typeof parsed.visual_prompt !== "string" || !parsed.visual_prompt.trim()) {
+    throw new Error("qwen data-visual prompt is empty");
+  }
+  if (!DATA_VISUAL_LAYOUTS.includes(parsed.layout)) {
+    throw new Error(`qwen data-visual layout "${parsed.layout}" is not one of ${DATA_VISUAL_LAYOUTS.join(", ")}`);
+  }
+  if (reuse && parsed.layout !== reuse.layout) {
+    throw new Error(`qwen data-visual ignored layout reuse (wanted "${reuse.layout}", got "${parsed.layout}")`);
+  }
+  if (typeof parsed.topic !== "string" || !parsed.topic.trim()) {
+    throw new Error("qwen data-visual topic is empty");
+  }
+  const label = typeof parsed.label === "string" ? parsed.label.trim() : "";
+  if (!label || label.split(/\s+/).length > 3) {
+    throw new Error(`qwen data-visual label must be 1-3 words (got "${parsed.label}")`);
+  }
+  return {
+    visual_prompt: parsed.visual_prompt.trim(),
+    layout: parsed.layout,
+    topic: parsed.topic.trim(),
+    label,
+  };
+}
+
+module.exports = {
+  toSceneJson,
+  regenerateVisualPrompt,
+  generateShotPrompt,
+  generateDataVisualPrompt,
+  DATA_VISUAL_LAYOUTS,
+  MODEL,
+};
