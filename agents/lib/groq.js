@@ -92,6 +92,14 @@ function buildSystemPrompt(channel, styleGuide) {
     "3. EARLY PERSONAL STAKES. In the first two beats, make it land that this is about the viewer's own body, behavior, or life right now, not an abstract fact about the entity. Ground it in something they experience today.",
     "4. NO TACTICAL CLOSER. The final beat must not resolve into advice or a tidy 'here's what to do.' End on an open, resonant, slightly haunting image that leaves something unresolved (matching the persona's high permitted ambiguity).",
     "",
+    "=== QUANTITATIVE ANCHORS (data moments — checkable rules) ===",
+    "Periodically anchor a claim in ONE concrete number or comparison (a duration, a distance, a proportion, a count, a trend), written as its own short standalone sentence or two. These become brief data visuals downstream, punctuating the character-driven narrative.",
+    "Rules, all checkable:",
+    "  - A quantitative anchor is at most two sentences and carries exactly one quantity.",
+    "  - Never place two quantitative anchors back to back; character-driven narration must sit between them.",
+    "  - Do NOT put them on a fixed schedule. Place one only where a number genuinely lands the point; a typical script has a few, spread out, not clustered.",
+    "  - When a later beat revisits or validates an earlier number with new evidence, state it in the SAME quantitative form as before (same unit, same comparison shape) so the visual can reuse the earlier graphic rather than inventing a new one.",
+    "",
     "First line of your reply MUST be exactly: TITLE: <the video title, built from the style guide title formula>",
     "Then a blank line, then the narration script itself, organized into the style guide's beats with a short bold beat label before each beat.",
     "",
@@ -114,7 +122,8 @@ async function generateScript({ groqKey, cerebrasKey, channel, styleGuide, entit
   // Groq free on_demand tier caps at 8000 TPM, counting input + reserved
   // max_tokens together. The system prompt now carries the Section 06 persona
   // block, the gap-dynamics block AND the Story Ladder block on top of the style
-  // guide, so input runs ~2000-2100 tokens (measured: 6000 reservation once
+  // guide, plus the quantitative-anchor block, so input runs ~2100-2300 tokens
+  // (still under the cap with the 5500 reservation; measured: 6000 reservation once
   // requested 8304 and 413'd, forcing a Cerebras fallback every call). Keep the
   // reservation low enough that input + reservation stays under 8000
   // (~2100 + 5500 = 7600 < 8000). ~72s of narration is only ~1500-2000 output
