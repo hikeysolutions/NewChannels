@@ -93,11 +93,12 @@ function buildSystemPrompt(channel, styleGuide) {
     "4. NO TACTICAL CLOSER. The final beat must not resolve into advice or a tidy 'here's what to do.' End on an open, resonant, slightly haunting image that leaves something unresolved (matching the persona's high permitted ambiguity).",
     "",
     "=== QUANTITATIVE ANCHORS (data moments — checkable rules) ===",
-    "Periodically anchor a claim in ONE concrete number or comparison (a duration, a distance, a proportion, a count, a trend), written as its own short standalone sentence or two. These become brief data visuals downstream, punctuating the character-driven narrative.",
+    "Anchor claims in concrete numbers or comparisons (a duration, a distance, a proportion, a count, a trend), each written as its own short standalone sentence or two. These become brief data visuals downstream, punctuating the character-driven narrative.",
     "Rules, all checkable:",
+    "  - Include 2 or 3 quantitative anchors per script — REQUIRED, not optional. Well-established quantities only (e.g. hours of darkness, sleep segments, distances, group sizes), consistent with the no-invented-facts rule above.",
     "  - A quantitative anchor is at most two sentences and carries exactly one quantity.",
     "  - Never place two quantitative anchors back to back; character-driven narration must sit between them.",
-    "  - Do NOT put them on a fixed schedule. Place one only where a number genuinely lands the point; a typical script has a few, spread out, not clustered.",
+    "  - Do NOT put them on a fixed schedule. Place each where its number genuinely lands the point, spread out across the script, never clustered.",
     "  - When a later beat revisits or validates an earlier number with new evidence, state it in the SAME quantitative form as before (same unit, same comparison shape) so the visual can reuse the earlier graphic rather than inventing a new one.",
     "",
     "First line of your reply MUST be exactly: TITLE: <the video title, built from the style guide title formula>",
@@ -122,13 +123,15 @@ async function generateScript({ groqKey, cerebrasKey, channel, styleGuide, entit
   // Groq free on_demand tier caps at 8000 TPM, counting input + reserved
   // max_tokens together. The system prompt now carries the Section 06 persona
   // block, the gap-dynamics block AND the Story Ladder block on top of the style
-  // guide, plus the quantitative-anchor block, so input runs ~2100-2300 tokens
-  // (still under the cap with the 5500 reservation; measured: 6000 reservation once
-  // requested 8304 and 413'd, forcing a Cerebras fallback every call). Keep the
-  // reservation low enough that input + reservation stays under 8000
-  // (~2100 + 5500 = 7600 < 8000). ~72s of narration is only ~1500-2000 output
-  // tokens, so 5500 is still ample headroom.
-  const maxTokens = 5500;
+  // guide, plus the quantitative-anchor block and the style guide's data-visual
+  // section, so input runs ~2700 tokens (measured live 2026-07-05: 5500
+  // reservation requested 8197 and 413'd on every call, forcing a permanent
+  // Cerebras fallback). Keep the reservation low enough that input + reservation
+  // stays under 8000 (~2700 + 4800 = 7500 < 8000). ~72s of narration is only
+  // ~1500-2000 output tokens, so 4800 is still ample headroom. If the system
+  // prompt grows again, re-measure: a 413 here fails SOFT (silent fallback), so
+  // watch for the [warn] 413 line after any prompt/style-guide edit.
+  const maxTokens = 4800;
   const temperature = 0.7;
 
   let provider = "groq";
