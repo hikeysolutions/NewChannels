@@ -112,6 +112,39 @@ const JACCARD_NEAR_DUP = 0.5;
 // sliding window (compare shot i against the DISTINCT_WINDOW shots before it).
 const DISTINCT_WINDOW = 3;
 
+// Data-visual shots (render.subject_type === "data_visual") are their own audit
+// class: they are graphics, not camera shots, so the framing check does not apply,
+// and distinctness is judged only against OTHER data-visual shots — a graphic will
+// always look "similar" to a character prompt by accident of shared topic words,
+// and deliberately similar to a recycled instance of the SAME topic (the grammar
+// registry mandates layout reuse), which must not be flagged. Non-visual-term and
+// non-English checks still apply to everything: a chart prompt must not say
+// "crackling" either.
+function isDataVisual(scene) {
+  if (!scene || typeof scene !== "object") return false;
+  if (scene.data_visual) return true;
+  return Boolean(scene.render && scene.render.subject_type === "data_visual");
+}
+
+function dataTopic(scene) {
+  const t = scene && scene.data_visual && scene.data_visual.topic;
+  return typeof t === "string" ? t.toLowerCase().replace(/[^a-z0-9 ]+/g, "").replace(/\s+/g, " ").trim() : null;
+}
+
+// Distinctness pairs are compared like-vs-like only; two data shots on the SAME
+// topic are intentional layout reuse and are never compared.
+function comparablePair(a, b) {
+  const da = isDataVisual(a);
+  const db = isDataVisual(b);
+  if (da !== db) return false;
+  if (da && db) {
+    const ta = dataTopic(a);
+    const tb = dataTopic(b);
+    if (ta && tb && ta === tb) return false;
+  }
+  return true;
+}
+
 // ---- audit -------------------------------------------------------------------
 // Returns { issues: [{ index, type, detail }] }. type is one of:
 //   "non_visual"      — an audio/sensation keyword the image model cannot render
@@ -130,7 +163,9 @@ function auditVisualPrompts(scenes) {
     if (kw) issues.push({ index: i, type: "non_visual", detail: kw });
     const ne = findNonEnglish(vp);
     if (ne) issues.push({ index: i, type: "non_english", detail: ne });
-    if (i > 0) {
+    // framing_repeat applies only between two CAMERA shots (data graphics carry
+    // no framing, and a data shot between two character shots is not a repeat).
+    if (i > 0 && !isDataVisual(scenes[i]) && !isDataVisual(scenes[i - 1])) {
       const f = firstFraming(vp);
       const fPrev = firstFraming(vps[i - 1]);
       if (f && fPrev && f === fPrev) {
@@ -148,7 +183,7 @@ function auditVisualPrompts(scenes) {
     let dup = null;
     for (const c of clauseSets[i]) {
       for (let k = from; k < i && dup === null; k += 1) {
-        if (clauseSets[k].has(c)) dup = c;
+        if (comparablePair(scenes[i], scenes[k]) && clauseSets[k].has(c)) dup = c;
       }
       if (dup) break;
     }
@@ -159,7 +194,7 @@ function auditVisualPrompts(scenes) {
   for (let i = 0; i < vps.length; i += 1) {
     const from = Math.max(0, i - DISTINCT_WINDOW);
     for (let k = from; k < i; k += 1) {
-      if (jaccard(vps[i], vps[k]) >= JACCARD_NEAR_DUP) {
+      if (comparablePair(scenes[i], scenes[k]) && jaccard(vps[i], vps[k]) >= JACCARD_NEAR_DUP) {
         issues.push({ index: i, type: "near_duplicate", detail: `scene ${k}` });
         break; // one near-dup flag per scene is enough to trigger repair
       }
@@ -293,6 +328,7 @@ module.exports = {
   jaccard,
   clauses,
   auditVisualPrompts,
+  isDataVisual,
   avoidInstruction,
   repairVisualPrompts,
   JACCARD_NEAR_DUP,

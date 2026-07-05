@@ -132,5 +132,35 @@ const uniqueMock = async ({ index, otherPrompts }) => {
   assert.strictEqual(adjacentDup.length, 1, "adjacent identical shots must be flagged");
   ok("distinctness windowed to ±3 (far repeats pass, adjacent flagged)");
 
+  // ---- 9. data_visual audit class: no framing/similarity false-positives ----
+  const dataScene = (vp, topic) => scene(vp, {
+    render: { era: "prehistoric", location: "", subject_type: "data_visual", style: "channel_default" },
+    data_visual: { layout: "timeline_bar", topic, label: "9 hours" },
+  });
+  const dataVp = "a horizontal timeline bar showing nine hours of darkness, dark baseline segment with one accent segment for firelight, label at the right";
+  // (a) data shot between two camera shots sharing a framing: framing_repeat must
+  // NOT fire on the data shot, and the two camera shots are non-adjacent so clean.
+  const mixed = [
+    scene("wide establishing shot of a single figure crouching by a fire kindling dry tinder"),
+    dataScene(dataVp, "darkness duration"),
+    scene("wide establishing shot of a small group of five dragging a carcass across the snow"),
+  ];
+  const mixedIssues = auditVisualPrompts(mixed).issues;
+  assert.strictEqual(mixedIssues.length, 0, `mixed data/camera must be clean, got ${JSON.stringify(mixedIssues)}`);
+  // (b) two adjacent data shots on the SAME topic (intentional layout reuse) -> clean
+  const reuse = auditVisualPrompts([dataScene(dataVp, "darkness duration"), dataScene(dataVp, "Darkness Duration")]).issues;
+  assert.strictEqual(reuse.length, 0, "same-topic data shots are intentional reuse, never flagged");
+  // (c) two adjacent data shots on DIFFERENT topics with near-identical prompts -> still flagged
+  const diffTopic = auditVisualPrompts([dataScene(dataVp, "darkness duration"), dataScene(dataVp, "sleep hours")]).issues;
+  assert.ok(diffTopic.some((i) => i.type === "near_duplicate"), "different-topic data near-dups still flagged");
+  // (d) data shot similar to a CAMERA shot -> never compared across classes
+  const cross = auditVisualPrompts([scene(dataVp), dataScene(dataVp, "darkness duration")]).issues;
+  assert.strictEqual(cross.filter((i) => i.type === "near_duplicate" || i.type === "clause_reuse").length, 0,
+    "cross-class similarity never flagged");
+  // (e) non-visual terms still caught on data shots
+  const leaky = auditVisualPrompts([dataScene("a donut chart with a crackling accent segment", "fire time")]).issues;
+  assert.ok(leaky.some((i) => i.type === "non_visual"), "non_visual still applies to data shots");
+  ok("data_visual audit class (framing skip, like-vs-like similarity, topic reuse exempt, non_visual kept)");
+
   process.stdout.write(`\n${passed} checks passed\n`);
 })().catch((e) => { console.error("TEST FAILED:", e.message); process.exit(1); });
