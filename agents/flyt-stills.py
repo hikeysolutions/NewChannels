@@ -63,6 +63,24 @@ CHANNEL_STYLE = {
     "channel_b": None,
 }
 
+# Style suffix for data_visual shots (render.subject_type == "data_visual"),
+# replacing CHANNEL_STYLE for those shots: same flat 2D minimalist art language
+# as the character scenes, plus the LOCKED color-semantics rule (mirrored in
+# ChannelA/STYLE_GUIDE.md — keep the two in sync). The palette is a constraint,
+# not decoration: the accent color is reserved for human intervention / change.
+DATA_VISUAL_STYLE = {
+    "channel_a": (
+        "Art style: stylized data graphic in the SAME simple flat 2D minimalist vector style as "
+        "the channel's stick-figure scenes — clean shapes, no gradients, no 3D, no gridlines, no "
+        "dense annotation, never a chart-software or infographic look. COLOR RULE (fixed semantic "
+        "palette): dark baseline tone for the unknown or natural state; neutral light tone for the "
+        "established fact; exactly ONE accent color, used ONLY for the portion representing human "
+        "intervention, change, or something gained or lost — nothing else may use the accent. "
+        "On-screen text is at most 1-3 words, large and instantly readable."
+    ),
+    "channel_b": None,
+}
+
 # Sentinel for a scene's `style` render-block field (Section 07/08). A scene
 # normally carries style="channel_default", meaning "use CHANNEL_STYLE for this
 # channel"; any other non-empty value is a deliberate per-scene art-style override.
@@ -151,13 +169,17 @@ def build_prompt(scene, channel, style_override=None):
     if descriptors:
         parts.append(". ".join(descriptors))
 
-    # Art style is governed by the channel-level CHANNEL_STYLE. render.style is only
-    # a scene-level override (rare); an explicit --style CLI flag still wins over all.
+    # Art style is governed by the channel-level CHANNEL_STYLE — except data_visual
+    # shots, which take DATA_VISUAL_STYLE (same flat 2D language + the locked color
+    # semantics). render.style is only a scene-level override (rare); an explicit
+    # --style CLI flag still wins over all.
     scene_style = render.get("style")
     if style_override:
         style = style_override
     elif isinstance(scene_style, str) and scene_style.strip() and scene_style.strip() != STYLE_DEFAULT:
         style = scene_style.strip()
+    elif render.get("subject_type") == "data_visual":
+        style = DATA_VISUAL_STYLE.get(channel)
     else:
         style = CHANNEL_STYLE.get(channel)
     if style:

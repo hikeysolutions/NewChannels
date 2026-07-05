@@ -44,6 +44,22 @@ Confirmed against the Zenn reference channel (replaces the earlier photorealisti
 - Transitions: soft cuts between beats (still to still); no hero clip inserts
 - Persistent element: small era/timestamp tag (e.g. "Viking Age, c. 900 AD")
 
+## Data Visuals (subject_type "data_visual")
+Stylized data/explainer graphics (timeline bars, radius diagrams, donut charts, simple line
+graphs, icon counts) in the SAME flat 2D minimalist vector style as the stick-figure scenes.
+Not a separate infographic style: no gradients, no 3D, no gridlines, no chart-software look.
+Encoded as DATA_VISUAL_STYLE["channel_a"] in agents/flyt-stills.py (keep the two in sync).
+- Color semantics (LOCKED, a constraint not decoration): small fixed palette. Dark baseline
+  tone for the unknown or natural state; neutral light tone for established facts; exactly ONE
+  accent color reserved for human intervention / change / gained-or-lost moments. Nothing else
+  may use the accent.
+- On-screen text: 1-3 words maximum, near-instantly readable. Longer explanation lives in
+  narration, never on screen.
+- Pacing: brief visual palette cleansers punctuating the character-driven narrative. Never two
+  adjacent data-visual scenes, no fixed schedule, roughly one per 4-6 scenes.
+- Grammar recycling: when a script revisits a related data point later, reuse the earlier
+  graphic's layout/structure (enforced by the shot-prompt pass's per-run topic-to-layout registry).
+
 ## Hard Rules
 - Genuine script variation every video, never find-and-replace templating (YouTube policy, Section 05)
 - Historical accuracy pass required before generation — flag invented claims, don't ship them (Section 03 step 2)
