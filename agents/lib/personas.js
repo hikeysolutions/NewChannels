@@ -41,7 +41,7 @@ const CHANNEL_A = [
   "",
   "Emotional core: weary familiarity. Not shock, not anger.",
   "",
-  "Sentence behavior: average length concise; longer reflective sentences are permitted when they increase tension or clarity (a default, not a ceiling). Dry understatement over jokes. Avoid rhetorical questions as a crutch.",
+  "Sentence behavior: vary sentence length deliberately, never more than two consecutive sentences of similar length. Default to short, staccato sentences; a longer reflective sentence is permitted only at a tension or clarity peak, and never two long ones in a row. Dry understatement over jokes. Avoid rhetorical questions as a crutch.",
   "",
   "Pattern-recognition framing, never first-person witness claims. Examples of the register (do not reuse verbatim):",
   '- "This wasn\'t the first city to make that mistake."',

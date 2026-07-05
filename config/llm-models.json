@@ -5,9 +5,9 @@
     "model": "openai/gpt-oss-120b",
     "endpoint": "https://api.groq.com/openai/v1/chat/completions",
     "auth_env": ["NEWCHANNELS_GROQ_API_KEY", "GROQ_API_KEY"],
-    "max_tokens": 4800,
+    "max_tokens": 4500,
     "temperature": 0.7,
-    "quirks": "Free on_demand tier caps at 8000 TPM counting input + reserved max_tokens together. Keep input + max_tokens under 8000 or the call 413s and falls through. Replaced deprecated llama-3.3-70b-versatile (Groq decommission 2026-08-16)."
+    "quirks": "Free on_demand tier caps at 8000 TPM counting input + reserved max_tokens together. Keep input + max_tokens under 8000 or the call 413s and falls through. Reservation is 4500 (was 4800): the DELIVERY & PACING prompt block pushed a real request to 7796/8000 (only ~200 headroom); 4500 restores ~500-token margin while still 2x+ the ~2000-token narration output. Replaced deprecated llama-3.3-70b-versatile (Groq decommission 2026-08-16)."
   },
   "cerebras": {
     "adapter": "openai_chat",

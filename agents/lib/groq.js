@@ -89,6 +89,11 @@ function buildSystemPrompt(channel, styleGuide) {
     "3. EARLY PERSONAL STAKES. In the first two beats, make it land that this is about the viewer's own body, behavior, or life right now, not an abstract fact about the entity. Ground it in something they experience today.",
     "4. NO TACTICAL CLOSER. The final beat must not resolve into advice or a tidy 'here's what to do.' End on an open, resonant, slightly haunting image that leaves something unresolved (matching the persona's high permitted ambiguity).",
     "",
+    "=== DELIVERY & PACING (retention mechanics — layered on the above, all checkable) ===",
+    "1. SPEED TO VALUE. Within the first 5 seconds of narration (the first line or two), explicitly signal the specific payoff coming. Not just that this touches the viewer's own life (the Story Ladder's personal-stakes rule already covers that), but a real promise of what is about to be revealed. If the full reveal cannot land that early, the opening line must still make clear that something surprising is coming and roughly what domain it sits in.",
+    "2. VALUE DENSITY. Every sentence must do one of three jobs: advance the gap chain, deliver a concrete detail, or set up the next beat. Cut any sentence that only transitions, restates, or sets a scene without adding new information.",
+    "3. REPEATERS. For the 1 or 2 most load-bearing claims ONLY, never every claim, state the point twice: first concisely with the proper term, then again in plainer words with a concrete example or comparison. Reserve this for the script's core payoff; ordinary claims are stated once.",
+    "",
     "=== QUANTITATIVE ANCHORS (data moments — checkable rules) ===",
     "Anchor claims in concrete numbers or comparisons (a duration, a distance, a proportion, a count, a trend), each written as its own short standalone sentence or two. These become brief data visuals downstream, punctuating the character-driven narrative.",
     "Rules, all checkable:",
@@ -114,12 +119,15 @@ function buildSystemPrompt(channel, styleGuide) {
 //
 // max_tokens note (lives on the Groq registry entry): the free on_demand tier
 // caps at 8000 TPM counting input + reserved max_tokens together. The system
-// prompt (persona + gap-dynamics + Story Ladder + quantitative-anchor blocks +
-// style guide) runs ~2700 tokens; a 5500 reservation once requested 8197 and
-// 413'd every call. 4800 keeps input + reservation under 8000 (~7500) with ample
-// output headroom (~72s narration is ~1500-2000 tokens). A 413 fails SOFT (falls
-// through to the next provider), so watch the [warn] 413 line after any
-// prompt/style-guide edit and re-measure if it grows.
+// prompt (persona + gap-dynamics + Story Ladder + DELIVERY & PACING +
+// quantitative-anchor blocks + style guide) runs ~3000 tokens; a 5500 reservation
+// once requested 8197 and 413'd every call. The DELIVERY & PACING block later
+// pushed a real request to 7796/8000 at a 4800 reservation (only ~200 headroom),
+// so the reservation was cut to 4500 (~7500 total, ~500 headroom) — still 2x+ the
+// ~1500-2000-token narration output. A 413 fails SOFT (falls through to the next
+// provider), so watch the [warn] 413 line after any prompt/style-guide edit and
+// re-measure if it grows. (A 429 with "Requested <8000" is a per-minute rate
+// limit from rapid successive calls, NOT the single-request 413 ceiling.)
 async function generateScript({ env, channel, styleGuide, entity, situation }) {
   const systemPrompt = buildSystemPrompt(channel, styleGuide);
   const userPrompt = [
