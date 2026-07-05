@@ -24,3 +24,13 @@ Items here are agreed but deliberately deferred. Do not start one without confir
 **Scope.** Revisit `agents/lib/shots.js segmentShots` window sizing. Check whether it targets the low end of the range on dense narration and whether nudging toward ~3s (or a soft cap on total shot count) meaningfully reduces shot count without hurting visual pacing. Measure against a few real scripts (short + dense) before/after.
 
 **Not blocking:** current sizing produces valid, watchable pacing; this is a cost + repair-rate optimization.
+
+---
+
+## [queued 2026-07-05] poller collect — transient GET failure wrongly marked stills_failed
+
+**Problem.** The poller's collect step treats ANY non-zero exit from the batch-status GET as terminal (stills_failed), with no distinction between "transient network/HTTP error on a still-running job" and "batch genuinely FAILED." This bit us live: row 4 flipped to stills_failed while the Gemini batch was healthily RUNNING (verified: live state still BATCH_STATE_RUNNING, no error, ~$0.82 already spent). The failing poll printed no `state=` line at all, meaning the collect subprocess crashed on the GET request itself before ever reading the state, exited non-zero, and the poller read that as a real failure.
+
+**Scope.** Distinguish a transient GET failure (network blip, 5xx, timeout) from a real terminal batch state before marking anything stills_failed. On a transient GET error: retry with backoff and leave the row at awaiting_stills for the next poll cycle. Only mark stills_failed when the API actually reports a terminal FAILED/CANCELLED/EXPIRED state. Lives in the collect path (`agents/lib/image_providers.py` GeminiImageAdapter.poll_batch / is_failed and `agents/flyt-stills.py run_batch_collect`) plus the poller's exit-code handling in `agents/flyt-poller.js` (exit 2 = pending already exists; needs a distinct "transient, stay pending" vs "terminal fail" signal).
+
+**Not blocking now:** scoped as a follow-up. Recovery for the current row 4 is a manual reset back to awaiting_stills so the next poll re-runs collect.
