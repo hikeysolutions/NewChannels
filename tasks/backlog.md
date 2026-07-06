@@ -44,3 +44,16 @@ Items here are agreed but deliberately deferred. Do not start one without confir
 **Do NOT use paid third-party tools** (OutlierKit, 1of10). The self-hosted version reuses infrastructure already built and avoids standing up a second orchestration layer, per Section 00a discipline.
 
 **Timing:** after Channel A publishes its first video, not before. Section 05 already gates this to "after the core pipeline is proven." Do not start it ahead of that gate.
+
+---
+
+## [queued] Arc Bureau — complete CLAUDE.md persona/stage spec + register in root
+
+**Blocked on input.** Arc Bureau was scaffolded (folder structure, STYLE_GUIDE.md, REFERENCES.md seeds) but `ArcBureau/CLAUDE.md` ships with `TODO(locked-spec)` stubs where the Analyst persona body and the stage mechanics belong — the locked master system prompt was never pasted, so those were deliberately NOT fabricated.
+
+**To do once the Arc Bureau master system prompt is pasted:**
+1. Fill the stubbed sections in `ArcBureau/CLAUDE.md` VERBATIM: Analyst persona (Decision Framework, Default Lens, emotional core, sentence behavior, forbidden elements), the **Narrative Swap Test** definition + pass/fail procedure, and the **Compression Curve** definition. Confirm the unlabeled stage constraints (one change per stage / no emotional naming / no moral framing / no rhetorical questions) match the doc's exact wording.
+2. Write the Analyst's Section 06 persona entry + Voice Consistency rubric (frozen copy into `agents/lib/personas.js` when build starts).
+3. **Only then** add Arc Bureau to the root `NewChannels/CLAUDE.md` channel list. Deliberately held back now — adding it to the five-channel list while it's stubbed would misrepresent its readiness.
+
+**Still separately unresolved (Layer 2 review, do not decide unilaterally):** change-category taxonomy vs `gap_type` enum; pre-written script queue channel-specific vs pipeline-wide; build sequencing vs Channels B-E.
