@@ -2,7 +2,18 @@
 # Boris Formula starter template (Master Doc Section 00b / Section 09)
 
 ## What This Is
-Two-channel YouTube automation pipeline. Channel A ("Before Now", historical curiosity) and Channel B (countdown/listicle, name TBD) share one flyt- agent set, parameterized by --channel. Fully isolated stack: no RunPod, no Higgsfield, no shared-gateway credits.
+Five-channel YouTube automation pipeline (A built, B planned/build-ready, C-E at varying earlier stages). All channels share ONE flyt- agent set, parameterized by --channel. Fully isolated stack: no RunPod, no Higgsfield, no shared-gateway credits.
+
+## Shared vs Channel-Specific (LOCKED BOUNDARY)
+Channels B, C, D, and E inherit Channel A's shared infrastructure and mechanics ONLY: the flyt-
+agent set, the LLM/image provider registries, the QA gate, the assembly pipeline, and the Telegram
+approval flow (Section 03c, "6 shared agent files, not 12"). They inherit NONE of Channel A's
+specific creative tuning. Each channel gets its own persona (Section 06 discipline), its own prompt
+content, its own length target, its own thumbnail treatment, and its own active provider choices.
+Never copy Channel A's "Reluctant Witness" persona, Story Ladder/Kallaway prompt content, length
+target, or provider selection into another channel. Each channel's creative direction is
+independent. The only rules shared across every channel are the two non-negotiable content rules
+(no real-person likeness, no depiction of minors, Part 4), already locked and already followed.
 
 ## Stack
 - Script gen: provider registry (config/llm-models.json), resolved by lib/llm_registry.js. Groq primary, Cerebras fallback. Prompt built in lib/groq.js.
@@ -35,5 +46,10 @@ Channel A first real end-to-end long-form runs (4 to 5 min). Atlas GPT Image 2 l
 - Full rationale: Section 10 of the Master Doc.
 
 ## Channel Configs
-- ChannelA/CLAUDE.md holds Channel A specifics (persona, title formula, active providers, QA gate).
-- Channel B: TBD.
+Each ChannelX/CLAUDE.md holds that channel's specifics (persona, title/format, active providers, QA
+gate), calibrated to its actual maturity. Creative direction is independent per the LOCKED BOUNDARY above.
+- ChannelA/CLAUDE.md — built, active refinement (persona, title formula, active providers, QA gate).
+- ChannelB/CLAUDE.md — planned, build-ready. "The Survivor" persona, countdown title formula locked; name TBD, providers/length to set.
+- ChannelC/CLAUDE.md — "FailNation", most build-ready of C-E. Scope locked, GPT Image 2 confirmed; open item is the video-gen model choice.
+- ChannelD/CLAUDE.md — concept-stage long-form. Single narrator + three-layer visual approach agreed; no pipeline, no name.
+- ChannelE/CLAUDE.md — "Fish Outta Water", placeholder. Sequenced last (character design first); parasocial-attachment risk flagged.
