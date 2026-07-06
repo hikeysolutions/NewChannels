@@ -15,8 +15,8 @@
     "model": "gpt-oss-120b",
     "endpoint": "https://api.cerebras.ai/v1/chat/completions",
     "auth_env": ["CEREBRAS_API_KEY"],
-    "max_tokens": 4800,
+    "max_tokens": 7500,
     "temperature": 0.7,
-    "quirks": "Standing cross-business fallback for the creative tier. No 8000 TPM ceiling, so it absorbs the Groq 413 case."
+    "quirks": "Standing cross-business fallback for the creative tier. No 8000 TPM ceiling, so it absorbs the Groq 413 case. max_tokens raised 4800 -> 7500 for the scene-JSON call type: gpt-oss-120b at reasoning_effort=low STILL spends ~3566 reasoning tokens on Cerebras (vs ~170 on Groq), so the reservation must cover reasoning + the full scene-JSON output (~3000 tokens) or the manifest truncates. Harmless to Stage-1 prose gen (No TPM cap, and prose output is well under this)."
   }
 }

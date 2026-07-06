@@ -16,8 +16,10 @@ const path = require("path");
 const { loadEnv, expandHome } = require("./lib/env");
 const { openDb, pickCombo, insertVideo, markComboUsed } = require("./lib/db");
 const { generateScript } = require("./lib/groq");
-const { toSceneJson, regenerateVisualPrompt } = require("./lib/qwen");
+const { regenerateVisualPrompt } = require("./lib/qwen");
+const { generateSceneJson } = require("./lib/scene_json");
 const { channelDir, slugify, validateScenes, normalizeScenes } = require("./lib/manifest");
+const { toCanonicalNarration } = require("./lib/script_segments");
 const { repairVisualPrompts } = require("./lib/vpcheck");
 
 const ROOT = path.resolve(__dirname, "..");
@@ -49,18 +51,24 @@ function readStyleGuide(channel) {
   return fs.readFileSync(guidePath, "utf8");
 }
 
-// Stage 2 with retry-then-alert (Section 03 step 6). Each attempt runs qwen, then
-// a deterministic normalizer (fixes adjacent gap_type repeats + hero count without
+// Stage 2 with retry-then-alert (Section 03 step 6). Each attempt runs the scene
+// JSON model (registry path: Groq primary, Cerebras fallback), then a
+// deterministic normalizer (fixes adjacent gap_type repeats + hero count without
 // a fresh regen), then strict validation. The normalizer means the structural
 // slips rarely reach validation at all; the extra attempts cover the remaining
 // stochastic failures (bad render vocab, non-contiguous timings, etc.).
 const SCENE_JSON_ATTEMPTS = 3;
 
 async function sceneJsonWithRetry(input, attempts = SCENE_JSON_ATTEMPTS) {
+  const referenceNarration = toCanonicalNarration(input.scriptText);
   let lastErr;
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
     try {
-      return validateScenes(normalizeScenes(await toSceneJson(input), input.channel), input.channel);
+      return validateScenes(
+        normalizeScenes(await generateSceneJson(input), input.channel),
+        input.channel,
+        referenceNarration
+      );
     } catch (err) {
       lastErr = err;
       if (attempt < attempts) {
@@ -95,8 +103,9 @@ async function main() {
     });
     process.stdout.write(`[info] title: ${title} (via ${provider})\n`);
 
-    process.stdout.write("[info] stage 2: qwen2.5:7b converting to scene JSON...\n");
+    process.stdout.write("[info] stage 2: Groq (Cerebras fallback) converting to scene JSON...\n");
     const validated = await sceneJsonWithRetry({
+      env,
       title,
       entity: combo.entity,
       situation: combo.situation,

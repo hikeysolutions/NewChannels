@@ -1,9 +1,17 @@
 "use strict";
 
-// Stage 2 of the two-stage model: the local qwen2.5:7b model on Ollama turns
-// the prose script into scene JSON with timestamps. This is the JSON step, kept
-// on the local model per the OpenClaw rule "Never use Gemini for JSON - use
-// qwen2.5:7b Ollama". Zero marginal cost, no network beyond localhost.
+// Local qwen2.5:7b (Ollama) helpers. Zero marginal cost, no network beyond
+// localhost.
+//
+// The whole-script -> scene JSON step (toSceneJson) originally ran here, but a
+// full 4-5 min script overflows the small model's context and flattens the gap
+// chain, so that ONE step now routes through the LLM registry (Groq primary,
+// Cerebras fallback) via scene_json.js. toSceneJson is kept as a local,
+// zero-cost fallback.
+//
+// The per-shot passes below (generateShotPrompt, generateDataVisualPrompt,
+// regenerateVisualPrompt) STAY on local qwen: small context, high call count
+// (~180/video), working fine, no reason to move them off free local inference.
 
 const OLLAMA_URL = "http://localhost:11434/api/generate";
 const MODEL = "qwen2.5:7b";

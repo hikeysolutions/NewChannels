@@ -4,6 +4,8 @@
 // at the system boundary: qwen output is external data and is never trusted
 // (coding-style: validate all input at boundaries).
 
+const { normalizeForCompare } = require("./script_segments");
+
 const CHANNEL_DIRS = { channel_a: "ChannelA", channel_b: "ChannelB" };
 
 // v2.7 gap-chain schema (Master Build Section 00c). Each block declares a
@@ -57,10 +59,16 @@ function slugify(title) {
     .slice(0, 60) || "untitled";
 }
 
-// Validate the qwen scene object and return a normalized manifest. Throws with
-// a specific message on the first problem found. `channel` gates the hero rule:
+// Validate the scene object and return a normalized manifest. Throws with a
+// specific message on the first problem found. `channel` gates the hero rule:
 // channel_a is stills-only (0 heroes), every other channel keeps the 1-2 rule.
-function validateScenes(sceneObj, channel) {
+//
+// `referenceNarration` (optional) is the canonical script narration. When given,
+// this HARD-FAILS if the concatenated scene narration does not match it exactly
+// (whitespace-insensitive) — the permanent safety net so Stage 2 can never again
+// silently ship a video missing part of its script. Callers on the generation
+// path always pass it; it is optional only so unrelated callers/tests need not.
+function validateScenes(sceneObj, channel, referenceNarration) {
   if (!sceneObj || typeof sceneObj !== "object") {
     throw new Error("manifest is not an object");
   }
@@ -151,6 +159,19 @@ function validateScenes(sceneObj, channel) {
     }
   } else if (heroCount < 1 || heroCount > 2) {
     throw new Error(`expected 1-2 hero scenes, got ${heroCount}`);
+  }
+
+  // Coverage safety net: the narration a viewer hears must be the WHOLE script.
+  // Compare whitespace-insensitively so per-scene trimming never registers as a
+  // gap. A mismatch means Stage 2 dropped or altered narration — a hard stop.
+  if (typeof referenceNarration === "string" && referenceNarration.trim() !== "") {
+    const got = normalizeForCompare(scenes.map((s) => s.narration).join(" "));
+    const want = normalizeForCompare(referenceNarration);
+    if (got !== want) {
+      throw new Error(
+        `narration coverage mismatch: concatenated scene narration (${got.length} chars) does not equal the script (${want.length} chars) — Stage 2 dropped or altered narration`
+      );
+    }
   }
 
   return { scenes, totalDurationSeconds: expectedStart, heroCount };
