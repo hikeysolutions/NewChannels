@@ -124,3 +124,26 @@ data_visual under-tagging: qwen currently tags 1-2 data_visual scenes even when 
 **[2026-07-05] | Sync-routing (non-batch providers): with a sync provider, paid generation runs inside the poller's collect step. At production shot-counts (~160-190 for an 8-min video), sequential generation would take 10+ minutes and risks the LaunchAgent poller interval overlapping itself. Concurrency-capped worker pool required — this was corrected after an initial sequential implementation surfaced the issue in real testing.**
 
 **[2026-07-05] | test_qa_gate.js's "gate returns >=1 blocker" failure was flagged as pre-existing across at least 3 separate sessions before actually being investigated and fixed (commit e347ac0, "qa gate test now proves blocking with a bad fixture"). Lesson: don't let a flagged-but-deferred test failure on the hard-stop QA gate ride along indefinitely — it directly affects whether a bad video actually gets blocked in production.**
+
+---
+
+## Stage 2 (scene JSON) moved to the LLM registry — cut-point coverage (2026-07-05)
+
+**[2026-07-05] | Whole-script -> scene JSON moved off local qwen2.5:7b onto the registry (Groq primary, Cerebras fallback). Root cause of the move: a full 4-5 min script overflows the 7B model's 4096 context, truncating the JSON and flattening the gap_state chain to all "opens" (verified: 586-word script -> 243/586 words captured, 15x "opens", dur 64s vs the ~234s it should be). Commit 1b34d8a.**
+The num_ctx:8192 patch was superseded by this and reverted.
+
+**[2026-07-05] | gpt-oss-120b is a REASONING model. In json_object mode on the scene-JSON prompt at DEFAULT reasoning effort it spends the ENTIRE max_tokens budget on hidden reasoning and emits ZERO content (measured: 5997 reasoning tokens, finish_reason "length", empty JSON -> Groq 413, Cerebras empty). Fix: set `reasoning_effort: "low"`. | For any gpt-oss (or reasoning-model) structured-JSON call, set reasoning_effort low, or the model reasons past the token budget and returns nothing. "medium" is unusable here: Cerebras low still burns ~3566 reasoning tokens, medium ~7497 (blows even a 7500 reservation). Stage-1 prose gen does NOT need this — only the JSON path did.**
+
+**[2026-07-05] | Asking ANY model to re-emit narration verbatim while segmenting made it ABRIDGE — it dropped ~half the script's sentences (14/31 preserved). Both qwen AND gpt-oss did this. | Never have the LLM reproduce source text it must preserve. Redesign: split the script into numbered sentences LOSSLESSLY (script_segments.js: splitSentences(t).join("")===t), have the model assign each scene a contiguous SENTENCE RANGE only, and reconstruct narration by slicing + compute timing from word count. 100% verbatim coverage by construction. validateScenes now HARD-FAILS on any narration!=script mismatch (permanent net) so a drop can never ship silently again.**
+
+**[2026-07-05] | Stage 1 (script ~7500 tok) + Stage 2 (scene JSON ~5300 tok) now both hit Groq back-to-back within seconds = ~12800 tokens in one minute, over the 8000 TPM per-minute limit, so Stage 2 usually 429s on Groq and lands on Cerebras. This is SOFT (falls through, Cerebras verified-clean) so it is not a failure, but "Groq primary for scene JSON" is mostly theoretical in a single back-to-back run. | Distinct from the single-request 413 ceiling: this is the per-minute 429 the earlier lesson predicted. If Groq-primary for Stage 2 ever actually matters (cost/latency), either space the two calls ~60s apart or give Stage 2 its own Cerebras-first provider order. Single-request budget itself is fine: scene-JSON Groq call is ~5319 total (input 2672 + 4500 reservation = 7172, ~828 headroom under 8000).**
+
+---
+
+## Memory pressure, VPS survey, and no-real-person in narration (2026-07-06)
+
+**[2026-07-06] | Memory-pressure recovery: freeing RAM mid-run (closing non-essential apps / stale sessions) let a degraded CPU-bound process (VoxCPM) recover to baseline speed in ~2 minutes without restarting. | A stuck/slow long-running local process doesn't always need a restart — check memory pressure first and free RAM before killing and re-running.**
+
+**[2026-07-06] | VPS survey: Ollama is running and network-reachable on the VPS, but only `qwen2.5-coder:3b` is pulled (no instruct-class 7B model), and VoxCPM is not installed at all. Real estimate for running both concurrently: ~9-10GB needed vs 12GB available — too tight. | Must stagger/queue on the VPS (qwen JSON generation, unload, then VoxCPM), not run simultaneously. Ollama's `:cloud` tags are NOT a substitute (LLM-only, no TTS) — a real VPS migration is still needed for narration.**
+
+**[2026-07-06] | Arc Bureau content ideas must never use real, identifiable named individuals (public figures, historical figures, especially any true-crime / convicted-criminal figures). | The no-real-person rule applies to narrative/narration content too, not just visuals/images. Use fictional/archetypal framing instead (e.g. "a gunslinger," not a named real outlaw).**

@@ -34,3 +34,13 @@ Items here are agreed but deliberately deferred. Do not start one without confir
 **Scope.** Distinguish a transient GET failure (network blip, 5xx, timeout) from a real terminal batch state before marking anything stills_failed. On a transient GET error: retry with backoff and leave the row at awaiting_stills for the next poll cycle. Only mark stills_failed when the API actually reports a terminal FAILED/CANCELLED/EXPIRED state. Lives in the collect path (`agents/lib/image_providers.py` GeminiImageAdapter.poll_batch / is_failed and `agents/flyt-stills.py run_batch_collect`) plus the poller's exit-code handling in `agents/flyt-poller.js` (exit 2 = pending already exists; needs a distinct "transient, stay pending" vs "terminal fail" signal).
 
 **Not blocking now:** scoped as a follow-up. Recovery for the current row 4 is a manual reset back to awaiting_stills so the next poll re-runs collect.
+
+---
+
+## [queued] outlier-scanning automation — self-hosted build (Section 05)
+
+**Build the self-hosted version.** YouTube Data API v3 on a cron job, tracking competitor channels, calculating new-video-views vs. 30-day-average ratio, alerting via Telegram (same FlytBot pattern) when a video crosses a 3-5x threshold within 48 hours, feeding directly into the existing `outlier_candidates` / `new_format_flags` tables in `tracking.db`.
+
+**Do NOT use paid third-party tools** (OutlierKit, 1of10). The self-hosted version reuses infrastructure already built and avoids standing up a second orchestration layer, per Section 00a discipline.
+
+**Timing:** after Channel A publishes its first video, not before. Section 05 already gates this to "after the core pipeline is proven." Do not start it ahead of that gate.
