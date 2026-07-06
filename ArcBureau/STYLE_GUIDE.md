@@ -1,8 +1,8 @@
 # Arc Bureau — Style Guide
 
-> Persona note: the Analyst voice spec lives in Master Doc Section 06 (to be written from the locked
-> master system prompt) and is read at runtime, not restated here. See ArcBureau/CLAUDE.md for the
-> stubbed persona/stage sections still awaiting the canonical document.
+> Persona note: the Analyst voice + stage structure are locked in ArcBureau/ARC_BUREAU_SPEC.md (the
+> canonical creative spec), summarized in ArcBureau/CLAUDE.md, and read at runtime. Not restated
+> here. This guide covers visual/composition only.
 
 ## Format
 ~10-minute long-form (16:9 landscape), single continuous narration, ~1,500 words. Built as an

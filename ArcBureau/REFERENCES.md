@@ -1,5 +1,10 @@
 # Arc Bureau — References
 
+## Canonical Creative Spec
+The locked Arc Bureau master system prompt lives in [ARC_BUREAU_SPEC.md](./ARC_BUREAU_SPEC.md) —
+source of truth for the Analyst persona, stage structure, change categories, and hard constraints.
+CLAUDE.md summarizes it; the spec file is authoritative.
+
 ## Seeded Concept Bank (candidate ideas only — NOT database rows)
 
 Nine seed concepts logged here as candidate ideas for Arc Bureau. These are candidates only. No
