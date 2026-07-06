@@ -119,6 +119,24 @@ check("validateScenes HARD-FAILS when narration drops content", () => {
   );
 });
 
+check("normalizeScenes coerces an invalid gap_type (state leaked into type slot)", () => {
+  const obj = {
+    scenes: [
+      goodScene({ start: 0, end: 2, narration: "a.", gap_type: "new_fact", gap_state: "opens" }),
+      // model dropped a gap_STATE value into gap_type — must be repaired, not thrown
+      goodScene({ start: 2, end: 4, narration: "b.", gap_type: "resolves", gap_state: "partial_resolve" }),
+      goodScene({ start: 4, end: 6, narration: "c.", gap_type: "escalation", gap_state: "resolves" }),
+    ],
+  };
+  const norm = normalizeScenes(obj, "channel_a");
+  const { GAP_TYPES_OK } = { GAP_TYPES_OK: ["new_fact", "contradiction", "escalation", "reframing", "hidden_implication", "anomaly", "causal_fragment", "perspective_shift"] };
+  assert.ok(GAP_TYPES_OK.includes(norm.scenes[1].gap_type), "invalid gap_type replaced with a valid one");
+  assert.notStrictEqual(norm.scenes[1].gap_type, norm.scenes[0].gap_type, "differs from previous");
+  assert.notStrictEqual(norm.scenes[1].gap_type, norm.scenes[2].gap_type, "differs from next");
+  // and it now passes validation without throwing
+  validateScenes(norm, "channel_a");
+});
+
 check("validateScenes skips coverage check when no reference given", () => {
   const obj = { scenes: [goodScene({ start: 0, end: 2, narration: "anything at all." })] };
   const out = validateScenes(normalizeScenes(obj, "channel_a"), "channel_a");

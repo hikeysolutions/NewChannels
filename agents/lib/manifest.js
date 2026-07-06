@@ -187,13 +187,19 @@ function normalizeScenes(sceneObj, channel) {
   }
   const scenes = sceneObj.scenes.map((s) => ({ ...s }));
 
-  // 1. No two ADJACENT scenes share a gap_type. Left-to-right: whenever scene[i]
-  //    repeats scene[i-1], reassign it to a valid gap_type that differs from BOTH
-  //    neighbours (8 types, at most 2 excluded, so one always exists).
-  for (let i = 1; i < scenes.length; i += 1) {
-    if (scenes[i].gap_type === scenes[i - 1].gap_type) {
-      const prev = scenes[i - 1].gap_type;
-      const next = i + 1 < scenes.length ? scenes[i + 1].gap_type : null;
+  // 1. Every scene needs a VALID gap_type with no two ADJACENT scenes sharing one.
+  //    Two slips are repaired here deterministically instead of forcing a
+  //    stochastic (and paid) regeneration: (a) an INVALID gap_type — the 120B
+  //    model routinely drops a gap_STATE value ("resolves", "reframes") into the
+  //    gap_type slot, which otherwise fails validation and burns a retry every
+  //    run; (b) a gap_type that repeats the previous scene's. Either way, reassign
+  //    to a valid gap_type that differs from BOTH neighbours (8 types, at most 2
+  //    excluded, so one always exists).
+  for (let i = 0; i < scenes.length; i += 1) {
+    const cur = scenes[i].gap_type;
+    const prev = i > 0 ? scenes[i - 1].gap_type : null;
+    const next = i + 1 < scenes.length ? scenes[i + 1].gap_type : null;
+    if (!GAP_TYPES.includes(cur) || cur === prev) {
       const replacement = GAP_TYPES.find((g) => g !== prev && g !== next);
       if (replacement) scenes[i] = { ...scenes[i], gap_type: replacement };
     }
